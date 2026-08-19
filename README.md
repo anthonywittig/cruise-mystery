@@ -33,12 +33,20 @@ npx serve .
 Ammo runs out! Stand near the **BUFFET**, the **BINGO** hall, or the gift
 **SHOP** to restock. Fallen aliens sometimes drop sodas and ammo boxes.
 
-### Your health is the passenger list
+### Your health is the passenger list — and you're on it
 
-Ten passengers stroll the decks — and they ARE your hit points. Every hit you
-take, the aliens tractor-beam a passenger (the nearest ones to the fight) up
-into the sky. Grab a soda and abducted passengers beam back down beside you.
-When the last passenger is taken, the cruise is over.
+Ten souls are aboard: nine passengers strolling the decks, plus **you**. They
+ARE your hit points. Every hit you take, the aliens tractor-beam the passenger
+nearest the fight up into their **UFO**, which swoops in to hover over the ship
+with its hostages (a live count rides along beside it).
+
+- **Shoot the UFO down** for a **MASS RESCUE** — everyone aboard beams back
+  down at the crash site, plus a fat score bonus. It fights back with goo
+  bombs, and a fresh saucer arrives for future abductions.
+- **Sodas** bribe one or two passengers back down beside you.
+- When only you remain, the roster flashes **LAST PASSENGER: YOU** — you run
+  faster on adrenaline, but one more hit and the beam comes for *you*.
+  Game over.
 
 ### The enemy
 

@@ -64,6 +64,9 @@ const sfx = {
   portal:     () => beep(90, 0.4, "sawtooth", 0.07, 200),
   abduct:     () => { beep(200, 0.5, "sawtooth", 0.08, 700); setTimeout(() => beep(400, 0.3, "sine", 0.06, 500), 150); },
   rescue:     () => { beep(900, 0.12, "square", 0.06, -300); setTimeout(() => beep(600, 0.15, "square", 0.06, -200), 120); },
+  ufoHit:     () => beep(180, 0.08, "square", 0.07, -60),
+  crash:      () => { beep(120, 0.5, "sawtooth", 0.12, -80); setTimeout(() => beep(80, 0.6, "sawtooth", 0.1, -40), 200); },
+  lastOne:    () => { beep(90, 0.2, "square", 0.1); setTimeout(() => beep(90, 0.2, "square", 0.1), 300); },
   gameover:   () => { beep(440, 0.3, "square", 0.09, -200); setTimeout(() => beep(220, 0.5, "square", 0.09, -120), 300); },
   victory:    () => { [523, 659, 784, 1047].forEach((f, i) => setTimeout(() => beep(f, 0.22, "square", 0.08), i * 180)); },
 };
@@ -323,6 +326,22 @@ const SPR_CHARM = sheet([
   ".yyy.",
   "..y..",
 ], { y: "#ffd23e", w: "#ffffff" });
+// --- the abductor UFO, 24x9, two frames (blinking lights)
+function makeUfo(lightCol) {
+  return sheet([
+    "........gggggggg........",
+    "......ggccccccccgg......",
+    "..hhhhhhhhhhhhhhhhhhhh..",
+    "hhhhhhhhhhhhhhhhhhhhhhhh",
+    "hLhhhhLhhhhLhhhhLhhhhLhh",
+    "hhhhhhhhhhhhhhhhhhhhhhhh",
+    "..dddddddddddddddddddd..",
+    "....dddddddddddddddd....",
+    "......d....dd....d......",
+  ], { g: "#9adbe8", c: "#4fc7e8", h: "#b8bcc8", d: "#6a7080", L: lightCol });
+}
+const UFO_SPR = [makeUfo("#ffd23e"), makeUfo("#ff6ec7")];
+
 const SPR_GOO = sheet([
   ".gg.",
   "gggg",
@@ -483,6 +502,7 @@ let state = "title"; // title | playing | wavebreak | gameover | victory
 let player, aliens, projectiles, gooProjs, particles, pickups, passengers, portals, floaters;
 let wave, score, waveBreakT, shake, time = 0, boss = null;
 let kills = 0;
+let ufo = null, ufoHold = 0, ufosDowned = 0;
 
 function resetGame() {
   player = {
@@ -492,13 +512,14 @@ function resetGame() {
   };
   aliens = []; projectiles = []; gooProjs = []; particles = [];
   pickups = []; portals = []; floaters = [];
-  // your health IS the passenger list: one passenger per hit point
+  // your health IS the passenger list: 9 fellow passengers + YOU (the 10th)
   passengers = [];
-  for (let i = 0; i < player.maxHp; i++) {
+  for (let i = 0; i < player.maxHp - 1; i++) {
     const p = randomWalkableTile(0);
     passengers.push(makePassenger(p.x, p.y, 0));
   }
   wave = 0; score = 0; kills = 0; shake = 0; boss = null;
+  ufo = null; ufoHold = 0; ufosDowned = 0;
   startWaveBreak();
 }
 
@@ -574,29 +595,36 @@ function makePassenger(x, y, spawnT) {
   };
 }
 
-// beam up the n passengers nearest to where the aliens struck
+// beam up the n passengers nearest to where the aliens struck;
+// they're held aboard the UFO, which flies in to collect
 function abductPassengers(n, fromX, fromY) {
   const alive = passengers.filter(q => q.state === "ok");
   alive.sort((a, b) =>
     Math.hypot(a.x - fromX, a.y - fromY) - Math.hypot(b.x - fromX, b.y - fromY));
-  for (let i = 0; i < Math.min(n, alive.length); i++) {
+  const taken = Math.min(n, alive.length);
+  for (let i = 0; i < taken; i++) {
     const q = alive[i];
     q.state = "abducted";
     q.abductT = 0;
     q.riseY = 0;
     floatText("ABDUCTED!", q.x, q.y - 14, "#a5ff9e", 1.4);
   }
-  if (alive.length > 0) sfx.abduct();
+  if (taken > 0) {
+    ufoHold += taken;
+    ensureUfo();
+    sfx.abduct();
+  }
 }
 
-// abducted passengers beam back down near the player
-function returnPassengers(n) {
+// held passengers beam back down near a spot (default: the player)
+function returnPassengers(n, cx, cy) {
+  if (cx === undefined) { cx = player.x; cy = player.y; }
   for (let i = 0; i < n; i++) {
     let pos = null;
     for (let tries = 0; tries < 60; tries++) {
       const ang = Math.random() * Math.PI * 2;
       const d = 24 + Math.random() * 40;
-      const px = player.x + Math.cos(ang) * d, py = player.y + Math.sin(ang) * d;
+      const px = cx + Math.cos(ang) * d, py = cy + Math.sin(ang) * d;
       if (!boxSolid(px - 4, py - 5, px + 4, py + 5)) { pos = { x: px, y: py }; break; }
     }
     if (!pos) pos = randomWalkableTile(0);
@@ -611,19 +639,121 @@ function damagePlayer(dmg) {
   player.hp = Math.max(0, player.hp - dmg);
   player.invulnT = 1.0;
   sfx.hurt();
-  abductPassengers(before - player.hp, player.x, player.y);
   if (player.hp <= 0) {
-    state = "gameover";
-    sfx.gameover();
-    burst(player.x, player.y, "#e8484d", 30);
+    // everyone else goes up... and then they come for YOU
+    abductPassengers(before - 1, player.x, player.y);
+    beginPlayerAbduction();
+    return;
+  }
+  abductPassengers(before - player.hp, player.x, player.y);
+  if (player.hp === 1) {
+    floatText("YOU'RE THE LAST PASSENGER!", player.x, player.y - 30, "#e8484d", 3);
+    sfx.lastOne();
   }
 }
 
+function beginPlayerAbduction() {
+  state = "playerAbducted";
+  player.abductT = 0;
+  player.riseY = 0;
+  sfx.abduct();
+}
+
+// pull passengers back out of the UFO's hold
 function healPlayer(n) {
-  const gained = Math.min(n, player.maxHp - player.hp);
+  const gained = Math.min(n, player.maxHp - player.hp, ufoHold);
   player.hp += gained;
+  ufoHold -= gained;
   returnPassengers(gained);
+  if (ufoHold <= 0 && ufo) ufo.leaving = true;
   return gained;
+}
+
+// ---------------------------------------------------------- the UFO
+function ensureUfo() {
+  if (ufo) { ufo.leaving = false; return; }
+  // fly in from a random edge of the world
+  const side = Math.floor(Math.random() * 4);
+  const x = side === 0 ? -30 : side === 1 ? WORLD_W + 30 : Math.random() * WORLD_W;
+  const y = side === 2 ? -30 : side === 3 ? WORLD_H + 30 : Math.random() * WORLD_H;
+  ufo = {
+    x, y, w: 24, h: 9,
+    hp: 12 + wave * 2, maxHp: 12 + wave * 2,
+    targetX: player.x, targetY: player.y - 60,
+    thinkT: 0, dropT: 3, hitT: 0, anim: 0, leaving: false,
+  };
+  sfx.portal();
+}
+
+function damageUfo(dmg, hitX, hitY) {
+  if (!ufo) return;
+  ufo.hp -= dmg;
+  ufo.hitT = 0.1;
+  sfx.ufoHit();
+  burst(hitX === undefined ? ufo.x : hitX, hitY === undefined ? ufo.y : hitY, "#9adbe8", 4);
+  if (ufo.hp <= 0) {
+    // MASS RESCUE: the whole hold beams down at the crash site
+    const freed = ufoHold;
+    const bonus = 100 + 25 * freed;
+    score += bonus;
+    ufosDowned++;
+    shake = 8;
+    sfx.crash();
+    burst(ufo.x, ufo.y, "#9adbe8", 30);
+    burst(ufo.x, ufo.y, "#ffd23e", 20);
+    floatText("UFO DOWN! +" + bonus, ufo.x, ufo.y - 16, "#ffd23e", 2);
+    if (freed > 0) {
+      player.hp += freed;
+      ufoHold = 0;
+      floatText("MASS RESCUE! " + freed + " FREED!", ufo.x, ufo.y - 28, "#7dff7d", 2.5);
+      returnPassengers(freed, ufo.x, ufo.y + 30);
+    }
+    ufo = null;
+  }
+}
+
+function updateUfo(dt) {
+  if (!ufo) return;
+  ufo.anim += dt * 6;
+  ufo.hitT -= dt;
+  if (ufo.leaving) {
+    // fly off the nearest edge and vanish
+    const exits = [[-40, ufo.y], [WORLD_W + 40, ufo.y], [ufo.x, -40], [ufo.x, WORLD_H + 40]];
+    exits.sort((a, b) =>
+      Math.hypot(a[0] - ufo.x, a[1] - ufo.y) - Math.hypot(b[0] - ufo.x, b[1] - ufo.y));
+    const dx = exits[0][0] - ufo.x, dy = exits[0][1] - ufo.y;
+    const d = Math.hypot(dx, dy) || 1;
+    ufo.x += (dx / d) * 90 * dt;
+    ufo.y += (dy / d) * 90 * dt;
+    if (ufo.x < -35 || ufo.x > WORLD_W + 35 || ufo.y < -35 || ufo.y > WORLD_H + 35) ufo = null;
+    return;
+  }
+  // taunt: hover around near the player
+  ufo.thinkT -= dt;
+  if (ufo.thinkT <= 0) {
+    ufo.thinkT = 2 + Math.random() * 2;
+    // stay over the ship footprint so throws can actually reach it
+    ufo.targetX = Math.max((CX - 15) * TILE, Math.min((CX + 15) * TILE,
+      player.x + (Math.random() - 0.5) * 160));
+    ufo.targetY = Math.max(6 * TILE, Math.min(90 * TILE,
+      player.y - 40 + (Math.random() - 0.5) * 120));
+  }
+  const dx = ufo.targetX - ufo.x, dy = ufo.targetY - ufo.y;
+  const d = Math.hypot(dx, dy);
+  if (d > 4) {
+    // swoop in fast from far away, drift lazily when close
+    const sp = d > 160 ? 130 : Math.min(52, d * 1.5);
+    ufo.x += (dx / d) * sp * dt;
+    ufo.y += (dy / d) * sp * dt;
+  }
+  // drop goo bombs while it has hostages
+  ufo.dropT -= dt;
+  if (ufo.dropT <= 0) {
+    ufo.dropT = 3.2;
+    const ang = Math.atan2(player.y - ufo.y, player.x - ufo.x);
+    gooProjs.push({ x: ufo.x, y: ufo.y + 8, vx: Math.cos(ang) * 95, vy: Math.sin(ang) * 95, life: 2.6 });
+    beep(420, 0.12, "sawtooth", 0.04, -250);
+  }
 }
 
 // ---------------------------------------------------------- helpers
@@ -755,12 +885,24 @@ function update(dt) {
   time += dt;
   if (state === "paused" || state === "title" || state === "gameover" || state === "victory") return;
 
+  if (state === "playerAbducted") {
+    // the aliens are taking YOU — beam-up cutscene, then game over
+    player.abductT += dt;
+    player.riseY += dt * 38 * Math.min(2, player.abductT * 2);
+    updatePassengers(dt);
+    updateParticles(dt);
+    updateCamera();
+    if (player.abductT > 2.2) { state = "gameover"; sfx.gameover(); }
+    return;
+  }
+
   updatePlayer(dt);
   flowT -= dt;
   if (flowT <= 0) { computeFlow(); flowT = 0.35; }
   updatePortals(dt);
   updateAliens(dt);
   updateProjectiles(dt);
+  updateUfo(dt);
   updatePassengers(dt);
   updatePickups(dt);
   updateParticles(dt);
@@ -776,6 +918,13 @@ function update(dt) {
       score += wave * 50;
       floatText("WAVE " + wave + " CLEAR! +" + wave * 50, player.x, player.y - 24, "#ffd23e", 2);
       if (wave >= FINAL_WAVE) {
+        // with the Broodmother gone, the UFO surrenders its hostages
+        if (ufoHold > 0) {
+          player.hp += ufoHold;
+          returnPassengers(ufoHold);
+          ufoHold = 0;
+        }
+        if (ufo) ufo.leaving = true;
         state = "victory";
         sfx.victory();
       } else {
@@ -795,7 +944,9 @@ function updatePlayer(dt) {
   p.moving = dx !== 0 || dy !== 0;
   if (p.moving) {
     const len = Math.hypot(dx, dy);
-    collideMove(p, (dx / len) * p.speed * dt, (dy / len) * p.speed * dt);
+    // adrenaline: the last passenger runs faster
+    const spd = p.speed * (p.hp === 1 ? 1.2 : 1);
+    collideMove(p, (dx / len) * spd * dt, (dy / len) * spd * dt);
     p.anim += dt * 10;
     if (Math.abs(dx) > Math.abs(dy)) p.dir = dx > 0 ? "right" : "left";
     else p.dir = dy > 0 ? "down" : "up";
@@ -931,7 +1082,7 @@ function updateAliens(dt) {
       const kx = (p.x - a.x) / dist, ky = (p.y - a.y) / dist;
       collideMove(p, kx * 12, ky * 12);
       damagePlayer(a.dmg);
-      if (state === "gameover") return;
+      if (state === "playerAbducted") return;
     }
   }
 }
@@ -945,6 +1096,15 @@ function updateProjectiles(dt) {
     pr.x += pr.vx * dt;
     pr.y += pr.vy * dt;
     let dead = pr.life <= 0;
+    // the UFO is fair game for anything you throw — it's airborne,
+    // so check it before walls can swat the projectile down
+    if (!dead && ufo && !pr.hitSet.has(ufo) &&
+        Math.abs(ufo.x - pr.x) * 2 < ufo.w + 8 && Math.abs(ufo.y - pr.y) * 2 < ufo.h + 10) {
+      pr.hitSet.add(ufo);
+      damageUfo(pr.dmg, pr.x, pr.y);
+      if (pr.pierce > 0) pr.pierce--;
+      else dead = true;
+    }
     // walls stop cards/charms; plates smash
     if (!dead && pointSolid(pr.x, pr.y)) {
       const t = tileAt(Math.floor(pr.x / TILE), Math.floor(pr.y / TILE));
@@ -1255,8 +1415,20 @@ function render() {
     }
   }
 
-  // player (flash while invulnerable)
-  if (player.invulnT <= 0 || Math.floor(time * 12) % 2 === 0) {
+  // player (flash while invulnerable; beamed up at the end; gone once game over)
+  if (state === "playerAbducted") {
+    const fade = Math.max(0, 1 - player.abductT / 2.2);
+    ctx.fillStyle = "rgba(120,255,140," + (0.32 * fade) + ")";
+    ctx.fillRect(Math.round(player.x - 8), Math.round(player.y - player.riseY - 80), 16, Math.round(player.riseY + 76));
+    ctx.fillStyle = "rgba(220,255,220," + (0.55 * fade) + ")";
+    ctx.fillRect(Math.round(player.x - 3), Math.round(player.y - player.riseY - 80), 6, Math.round(player.riseY + 76));
+    if (Math.floor(time * 10) % 2 === 0) {
+      ctx.globalAlpha = fade;
+      ctx.drawImage(PLAYER_SPR.down[0], Math.round(player.x - 5), Math.round(player.y - 10 - player.riseY));
+      ctx.globalAlpha = 1;
+    }
+  } else if (state !== "gameover" &&
+             (player.invulnT <= 0 || Math.floor(time * 12) % 2 === 0)) {
     const frames = PLAYER_SPR[player.dir];
     const f = frames[player.moving ? Math.floor(player.anim) % 2 : 0];
     ctx.drawImage(f, Math.round(player.x - 5), Math.round(player.y - 10));
@@ -1278,6 +1450,42 @@ function render() {
   for (const p of particles) {
     ctx.fillStyle = p.color;
     ctx.fillRect(Math.round(p.x), Math.round(p.y), p.size, p.size);
+  }
+
+  // the UFO (airborne — drawn above everything on deck)
+  if (ufo) {
+    const bob = Math.sin(time * 3) * 3;
+    const ux = Math.round(ufo.x), uy = Math.round(ufo.y + bob);
+    // shadow on the deck below
+    ctx.fillStyle = "rgba(0,0,0,0.25)";
+    ctx.beginPath();
+    ctx.ellipse(ux, uy + 34, 12, 4, 0, 0, Math.PI * 2);
+    ctx.fill();
+    const spr = UFO_SPR[Math.floor(ufo.anim) % 2];
+    if (ufo.hitT > 0) {
+      ctx.globalAlpha = 0.6;
+      ctx.fillStyle = "#fff";
+      ctx.fillRect(ux - 13, uy - 6, 26, 11);
+      ctx.globalAlpha = 1;
+    }
+    ctx.drawImage(spr, ux - 12, uy - 4);
+    // hp bar
+    if (ufo.hp < ufo.maxHp) {
+      ctx.fillStyle = "#102030";
+      ctx.fillRect(ux - 13, uy - 10, 26, 2);
+      ctx.fillStyle = "#4fc7e8";
+      ctx.fillRect(ux - 13, uy - 10, Math.max(0, 26 * (ufo.hp / ufo.maxHp)), 2);
+    }
+    // hostage count riding along
+    if (ufoHold > 0) {
+      ctx.fillStyle = "#f2c396";
+      ctx.fillRect(ux + 15, uy - 3, 3, 2);
+      ctx.fillStyle = "#e8484d";
+      ctx.fillRect(ux + 14, uy - 1, 5, 3);
+      ctx.font = "7px monospace";
+      ctx.fillStyle = "#fff";
+      ctx.fillText("x" + ufoHold, ux + 21, uy + 3);
+    }
   }
 
   // floating text
@@ -1322,28 +1530,47 @@ function render() {
 }
 
 function renderHUD() {
-  // passenger roster = health: lit icon for each soul still on board
+  // passenger roster = health. Icon 0 is YOU — the last passenger they'll take.
   const shirtCols = ["#3fa14d", "#8a4fd0", "#e88f2a", "#2ab5c9", "#d94f9e"];
   for (let i = 0; i < player.maxHp; i++) {
     const x = 6 + i * 9, y = 6;
+    const isYou = i === 0;
     const aboard = i < player.hp;
     if (aboard) {
-      ctx.fillStyle = "#f2c396";                  // head
+      if (isYou && player.hp === 1 && Math.floor(time * 4) % 2 === 0) {
+        // you're all that's left — your icon blinks red
+        ctx.fillStyle = "#e8484d";
+        ctx.fillRect(x - 1, y - 1, 8, 11);
+      }
+      if (isYou) { ctx.fillStyle = "#7a4a21"; ctx.fillRect(x + 1, y - 1, 4, 1); } // your hair tuft
+      ctx.fillStyle = "#f2c396";                        // head
       ctx.fillRect(x + 1, y, 4, 3);
-      ctx.fillStyle = shirtCols[i % shirtCols.length]; // shirt
+      ctx.fillStyle = isYou ? "#e8484d" : shirtCols[i % shirtCols.length]; // shirt
       ctx.fillRect(x, y + 3, 6, 4);
-      ctx.fillStyle = "#3b5c8f";                  // legs
+      if (isYou) { ctx.fillStyle = "#ffd23e"; ctx.fillRect(x + 2, y + 4, 2, 1); } // hawaiian flower
+      ctx.fillStyle = "#3b5c8f";                        // legs
       ctx.fillRect(x + 1, y + 7, 1, 2); ctx.fillRect(x + 4, y + 7, 1, 2);
     } else {
-      ctx.fillStyle = "rgba(160,255,160,0.28)";   // abducted: faint green silhouette
+      ctx.fillStyle = "rgba(160,255,160,0.28)";         // abducted: faint green silhouette
       ctx.fillRect(x + 1, y, 4, 3);
       ctx.fillRect(x, y + 3, 6, 4);
       ctx.fillRect(x + 1, y + 7, 1, 2); ctx.fillRect(x + 4, y + 7, 1, 2);
     }
   }
   ctx.font = "7px monospace";
-  ctx.fillStyle = player.hp <= 2 ? "#e8484d" : "#b8c4d8";
-  ctx.fillText("PASSENGERS " + player.hp + "/" + player.maxHp, 6, 24);
+  if (player.hp === 1) {
+    if (Math.floor(time * 3) % 2 === 0) {
+      ctx.fillStyle = "#e8484d";
+      ctx.fillText("LAST PASSENGER: YOU!", 6, 24);
+    }
+  } else {
+    ctx.fillStyle = player.hp <= 3 ? "#e8484d" : "#b8c4d8";
+    ctx.fillText("PASSENGERS " + player.hp + "/" + player.maxHp, 6, 24);
+  }
+  if (ufoHold > 0) {
+    ctx.fillStyle = "#4fc7e8";
+    ctx.fillText("UFO HOLDS " + ufoHold + " — SHOOT IT DOWN!", 6, 33);
+  }
   // wave + score
   ctx.font = "8px monospace";
   ctx.textAlign = "right";
@@ -1416,8 +1643,9 @@ function renderTitle() {
     "BINGO CARDS .... fast | PLATES .... heavy, pierce",
     "FREE CHARMS .......... spread shot",
     "restock at the BUFFET, BINGO hall & gift SHOP",
-    "every hit you take, a PASSENGER is abducted!",
-    "grab sodas to beam them back — lose all 10 & it's over",
+    "every hit you take, a PASSENGER is beamed to the UFO!",
+    "SHOOT THE UFO DOWN for a mass rescue (sodas free a few)",
+    "you're a passenger too — the LAST one they'll take...",
     "P pause   M mute",
   ];
   lines.forEach((l, i) => ctx.fillText(l, VIEW_W / 2, 134 + i * 12));
@@ -1439,8 +1667,8 @@ function renderGameOver() {
   ctx.fillText("ALL ABDUCTED!", VIEW_W / 2, 120);
   ctx.fillStyle = "#fff";
   ctx.font = "9px monospace";
-  ctx.fillText("every last passenger was beamed away... even the cruise director", VIEW_W / 2, 145);
-  ctx.fillText("SCORE: " + score + "   WAVES: " + wave + "   ALIENS SPLATTED: " + kills, VIEW_W / 2, 165);
+  ctx.fillText("they saved the best for last — and the last passenger was YOU", VIEW_W / 2, 145);
+  ctx.fillText("SCORE: " + score + "   WAVES: " + wave + "   ALIENS SPLATTED: " + kills + "   UFOs DOWNED: " + ufosDowned, VIEW_W / 2, 165);
   if (Math.floor(time * 2) % 2 === 0)
     ctx.fillText("- PRESS ENTER TO TRY AGAIN -", VIEW_W / 2, 200);
   ctx.textAlign = "left";
@@ -1458,7 +1686,7 @@ function renderVictory() {
   ctx.fillText("the Broodmother is defeated —", VIEW_W / 2, 135);
   ctx.fillText(player.hp + " of " + player.maxHp + " passengers make the conga line at 8pm sharp.", VIEW_W / 2, 147);
   ctx.fillStyle = "#fff";
-  ctx.fillText("FINAL SCORE: " + score + "   ALIENS SPLATTED: " + kills, VIEW_W / 2, 170);
+  ctx.fillText("FINAL SCORE: " + score + "   ALIENS SPLATTED: " + kills + "   UFOs DOWNED: " + ufosDowned, VIEW_W / 2, 170);
   // confetti
   for (let i = 0; i < 40; i++) {
     const x = (i * 137 + time * 40) % VIEW_W;
@@ -1480,9 +1708,12 @@ window.__aod = {
   get player() { return player; },
   get aliens() { return aliens; },
   get passengers() { return passengers; },
+  get ufo() { return ufo; },
+  get ufoHold() { return ufoHold; },
   get cam() { return { x: camX, y: camY }; },
   damage(n) { player.invulnT = 0; damagePlayer(n); },
   heal(n) { return healPlayer(n); },
+  ufoDamage(n) { damageUfo(n); },
 };
 
 // ---------------------------------------------------------- loop
