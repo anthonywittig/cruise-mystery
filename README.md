@@ -31,7 +31,14 @@ npx serve .
 - **Free jewelry charms** — a glittering shotgun spread
 
 Ammo runs out! Stand near the **BUFFET**, the **BINGO** hall, or the gift
-**SHOP** to restock. Fallen aliens sometimes drop sodas (+2 HP) and ammo boxes.
+**SHOP** to restock. Fallen aliens sometimes drop sodas and ammo boxes.
+
+### Your health is the passenger list
+
+Ten passengers stroll the decks — and they ARE your hit points. Every hit you
+take, the aliens tractor-beam a passenger (the nearest ones to the fight) up
+into the sky. Grab a soda and abducted passengers beam back down beside you.
+When the last passenger is taken, the cruise is over.
 
 ### The enemy
 
