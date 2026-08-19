@@ -62,6 +62,8 @@ const sfx = {
   refill:     () => beep(520, 0.05, "square", 0.04, 200),
   wave:       () => { beep(330, 0.15, "square", 0.08); setTimeout(() => beep(440, 0.15, "square", 0.08), 160); setTimeout(() => beep(550, 0.25, "square", 0.08), 320); },
   portal:     () => beep(90, 0.4, "sawtooth", 0.07, 200),
+  abduct:     () => { beep(200, 0.5, "sawtooth", 0.08, 700); setTimeout(() => beep(400, 0.3, "sine", 0.06, 500), 150); },
+  rescue:     () => { beep(900, 0.12, "square", 0.06, -300); setTimeout(() => beep(600, 0.15, "square", 0.06, -200), 120); },
   gameover:   () => { beep(440, 0.3, "square", 0.09, -200); setTimeout(() => beep(220, 0.5, "square", 0.09, -120), 300); },
   victory:    () => { [523, 659, 784, 1047].forEach((f, i) => setTimeout(() => beep(f, 0.22, "square", 0.08), i * 180)); },
 };
@@ -490,14 +492,11 @@ function resetGame() {
   };
   aliens = []; projectiles = []; gooProjs = []; particles = [];
   pickups = []; portals = []; floaters = [];
+  // your health IS the passenger list: one passenger per hit point
   passengers = [];
-  for (let i = 0; i < 8; i++) {
+  for (let i = 0; i < player.maxHp; i++) {
     const p = randomWalkableTile(0);
-    passengers.push({
-      x: p.x, y: p.y, w: 8, h: 10, dirX: 0, dirY: 0, thinkT: Math.random() * 2,
-      anim: Math.random() * 10, spr: PASSENGER_SPRS[i % PASSENGER_SPRS.length],
-      panicT: 0,
-    });
+    passengers.push(makePassenger(p.x, p.y, 0));
   }
   wave = 0; score = 0; kills = 0; shake = 0; boss = null;
   startWaveBreak();
@@ -563,6 +562,68 @@ function spawnAlien(kind, x, y) {
   aliens.push(a);
   if (kind === "boss") boss = a;
   burst(x, y, "#a5ff9e", 14);
+}
+
+// ---------------------------------------------------------- passengers = health
+function makePassenger(x, y, spawnT) {
+  return {
+    x, y, w: 8, h: 10, dirX: 0, dirY: 0, thinkT: Math.random() * 2,
+    anim: Math.random() * 10,
+    spr: PASSENGER_SPRS[Math.floor(Math.random() * PASSENGER_SPRS.length)],
+    panicT: 0, state: "ok", abductT: 0, spawnT: spawnT || 0,
+  };
+}
+
+// beam up the n passengers nearest to where the aliens struck
+function abductPassengers(n, fromX, fromY) {
+  const alive = passengers.filter(q => q.state === "ok");
+  alive.sort((a, b) =>
+    Math.hypot(a.x - fromX, a.y - fromY) - Math.hypot(b.x - fromX, b.y - fromY));
+  for (let i = 0; i < Math.min(n, alive.length); i++) {
+    const q = alive[i];
+    q.state = "abducted";
+    q.abductT = 0;
+    q.riseY = 0;
+    floatText("ABDUCTED!", q.x, q.y - 14, "#a5ff9e", 1.4);
+  }
+  if (alive.length > 0) sfx.abduct();
+}
+
+// abducted passengers beam back down near the player
+function returnPassengers(n) {
+  for (let i = 0; i < n; i++) {
+    let pos = null;
+    for (let tries = 0; tries < 60; tries++) {
+      const ang = Math.random() * Math.PI * 2;
+      const d = 24 + Math.random() * 40;
+      const px = player.x + Math.cos(ang) * d, py = player.y + Math.sin(ang) * d;
+      if (!boxSolid(px - 4, py - 5, px + 4, py + 5)) { pos = { x: px, y: py }; break; }
+    }
+    if (!pos) pos = randomWalkableTile(0);
+    passengers.push(makePassenger(pos.x, pos.y, 0.9));
+    floatText("RESCUED!", pos.x, pos.y - 14, "#7dff7d", 1.4);
+  }
+  if (n > 0) sfx.rescue();
+}
+
+function damagePlayer(dmg) {
+  const before = player.hp;
+  player.hp = Math.max(0, player.hp - dmg);
+  player.invulnT = 1.0;
+  sfx.hurt();
+  abductPassengers(before - player.hp, player.x, player.y);
+  if (player.hp <= 0) {
+    state = "gameover";
+    sfx.gameover();
+    burst(player.x, player.y, "#e8484d", 30);
+  }
+}
+
+function healPlayer(n) {
+  const gained = Math.min(n, player.maxHp - player.hp);
+  player.hp += gained;
+  returnPassengers(gained);
+  return gained;
 }
 
 // ---------------------------------------------------------- helpers
@@ -864,20 +925,13 @@ function updateAliens(dt) {
 
     // contact damage
     if (p.invulnT <= 0 && rectsOverlap(a, p)) {
-      p.hp -= a.dmg;
-      p.invulnT = 1.0;
       shake = 4;
-      sfx.hurt();
       burst(p.x, p.y, "#e8484d", 8);
       // knock player back
       const kx = (p.x - a.x) / dist, ky = (p.y - a.y) / dist;
       collideMove(p, kx * 12, ky * 12);
-      if (p.hp <= 0) {
-        state = "gameover";
-        sfx.gameover();
-        burst(p.x, p.y, "#e8484d", 30);
-        return;
-      }
+      damagePlayer(a.dmg);
+      if (state === "gameover") return;
     }
   }
 }
@@ -934,12 +988,9 @@ function updateProjectiles(dt) {
     if (!dead && player.invulnT <= 0 &&
         Math.abs(player.x - g.x) * 2 < player.w + 4 &&
         Math.abs(player.y - g.y) * 2 < player.h + 4) {
-      player.hp -= 1;
-      player.invulnT = 1.0;
       shake = 3;
-      sfx.hurt();
       dead = true;
-      if (player.hp <= 0) { state = "gameover"; sfx.gameover(); }
+      damagePlayer(1);
     }
     if (dead) gooProjs.splice(i, 1);
   }
@@ -968,8 +1019,8 @@ function updatePickups(dt) {
     if (pk.t <= 0) { pickups.splice(i, 1); continue; }
     if (Math.hypot(pk.x - player.x, pk.y - player.y) < 12) {
       if (pk.kind === "soda") {
-        player.hp = Math.min(player.maxHp, player.hp + 2);
-        floatText("+2 HP", pk.x, pk.y - 10, "#7dff7d", 1);
+        const got = healPlayer(2);
+        floatText(got > 0 ? "+" + got + " PASSENGERS BACK" : "ALL ABOARD ALREADY", pk.x, pk.y - 10, "#7dff7d", 1);
       } else {
         const wi = Math.floor(Math.random() * WEAPONS.length);
         player.ammo[wi] = Math.min(WEAPONS[wi].max, player.ammo[wi] + Math.ceil(WEAPONS[wi].max / 4));
@@ -982,7 +1033,16 @@ function updatePickups(dt) {
 }
 
 function updatePassengers(dt) {
-  for (const q of passengers) {
+  for (let i = passengers.length - 1; i >= 0; i--) {
+    const q = passengers[i];
+    if (q.state === "abducted") {
+      // beamed up into the sky, then gone
+      q.abductT += dt;
+      q.riseY += dt * 42 * Math.min(2, q.abductT * 2);
+      if (q.abductT > 1.6) passengers.splice(i, 1);
+      continue;
+    }
+    if (q.spawnT > 0) { q.spawnT -= dt; continue; }
     q.anim += dt * 8;
     q.thinkT -= dt;
     q.panicT -= dt;
@@ -1139,6 +1199,26 @@ function render() {
 
   // passengers
   for (const q of passengers) {
+    if (q.state === "abducted") {
+      // green tractor beam from above, passenger rising and flickering
+      const fade = Math.max(0, 1 - q.abductT / 1.6);
+      ctx.fillStyle = "rgba(120,255,140," + (0.28 * fade) + ")";
+      ctx.fillRect(Math.round(q.x - 7), Math.round(q.y - q.riseY - 70), 14, Math.round(q.riseY + 66));
+      ctx.fillStyle = "rgba(220,255,220," + (0.5 * fade) + ")";
+      ctx.fillRect(Math.round(q.x - 3), Math.round(q.y - q.riseY - 70), 6, Math.round(q.riseY + 66));
+      if (Math.floor(time * 10) % 2 === 0) {
+        ctx.globalAlpha = fade;
+        ctx.drawImage(q.spr.down[0], Math.round(q.x - 5), Math.round(q.y - 10 - q.riseY));
+        ctx.globalAlpha = 1;
+      }
+      continue;
+    }
+    if (q.spawnT > 0) {
+      // beam-down shimmer as a rescued passenger returns
+      ctx.fillStyle = "rgba(150,220,255," + (0.6 * (q.spawnT / 0.9)) + ")";
+      ctx.fillRect(Math.round(q.x - 5), Math.round(q.y - 12 - 8 * (q.spawnT / 0.9)), 10, 14);
+      continue;
+    }
     const f = q.spr.down[Math.floor(q.anim) % 2];
     ctx.drawImage(f, Math.round(q.x - 5), Math.round(q.y - 10));
     if (q.panicT > 0 && Math.floor(time * 6) % 2 === 0) {
@@ -1242,22 +1322,28 @@ function render() {
 }
 
 function renderHUD() {
-  // hearts
-  for (let i = 0; i < player.maxHp / 2; i++) {
-    const x = 6 + i * 11, y = 6;
-    const v = player.hp - i * 2; // 2 = full, 1 = half, <=0 empty
-    ctx.fillStyle = v >= 2 ? "#e8484d" : v === 1 ? "#a03038" : "#3a2030";
-    // chunky heart
-    ctx.fillRect(x, y + 1, 3, 3); ctx.fillRect(x + 5, y + 1, 3, 3);
-    ctx.fillRect(x, y + 2, 8, 3); ctx.fillRect(x + 1, y + 5, 6, 2);
-    ctx.fillRect(x + 3, y + 7, 2, 1);
-    if (v === 1) { // half-heart: darken right side
-      ctx.fillStyle = "#3a2030";
-      ctx.fillRect(x + 4, y + 1, 4, 4);
-      ctx.fillRect(x + 4, y + 2, 4, 3);
-      ctx.fillRect(x + 4, y + 5, 3, 2);
+  // passenger roster = health: lit icon for each soul still on board
+  const shirtCols = ["#3fa14d", "#8a4fd0", "#e88f2a", "#2ab5c9", "#d94f9e"];
+  for (let i = 0; i < player.maxHp; i++) {
+    const x = 6 + i * 9, y = 6;
+    const aboard = i < player.hp;
+    if (aboard) {
+      ctx.fillStyle = "#f2c396";                  // head
+      ctx.fillRect(x + 1, y, 4, 3);
+      ctx.fillStyle = shirtCols[i % shirtCols.length]; // shirt
+      ctx.fillRect(x, y + 3, 6, 4);
+      ctx.fillStyle = "#3b5c8f";                  // legs
+      ctx.fillRect(x + 1, y + 7, 1, 2); ctx.fillRect(x + 4, y + 7, 1, 2);
+    } else {
+      ctx.fillStyle = "rgba(160,255,160,0.28)";   // abducted: faint green silhouette
+      ctx.fillRect(x + 1, y, 4, 3);
+      ctx.fillRect(x, y + 3, 6, 4);
+      ctx.fillRect(x + 1, y + 7, 1, 2); ctx.fillRect(x + 4, y + 7, 1, 2);
     }
   }
+  ctx.font = "7px monospace";
+  ctx.fillStyle = player.hp <= 2 ? "#e8484d" : "#b8c4d8";
+  ctx.fillText("PASSENGERS " + player.hp + "/" + player.maxHp, 6, 24);
   // wave + score
   ctx.font = "8px monospace";
   ctx.textAlign = "right";
@@ -1330,6 +1416,8 @@ function renderTitle() {
     "BINGO CARDS .... fast | PLATES .... heavy, pierce",
     "FREE CHARMS .......... spread shot",
     "restock at the BUFFET, BINGO hall & gift SHOP",
+    "every hit you take, a PASSENGER is abducted!",
+    "grab sodas to beam them back — lose all 10 & it's over",
     "P pause   M mute",
   ];
   lines.forEach((l, i) => ctx.fillText(l, VIEW_W / 2, 134 + i * 12));
@@ -1348,10 +1436,10 @@ function renderGameOver() {
   ctx.textAlign = "center";
   ctx.fillStyle = "#e8484d";
   ctx.font = "22px monospace";
-  ctx.fillText("ABDUCTED!", VIEW_W / 2, 120);
+  ctx.fillText("ALL ABDUCTED!", VIEW_W / 2, 120);
   ctx.fillStyle = "#fff";
   ctx.font = "9px monospace";
-  ctx.fillText("the aliens took the ship... and the midnight buffet", VIEW_W / 2, 145);
+  ctx.fillText("every last passenger was beamed away... even the cruise director", VIEW_W / 2, 145);
   ctx.fillText("SCORE: " + score + "   WAVES: " + wave + "   ALIENS SPLATTED: " + kills, VIEW_W / 2, 165);
   if (Math.floor(time * 2) % 2 === 0)
     ctx.fillText("- PRESS ENTER TO TRY AGAIN -", VIEW_W / 2, 200);
@@ -1368,7 +1456,7 @@ function renderVictory() {
   ctx.fillStyle = "#a5ff9e";
   ctx.font = "9px monospace";
   ctx.fillText("the Broodmother is defeated —", VIEW_W / 2, 135);
-  ctx.fillText("the conga line resumes at 8pm sharp.", VIEW_W / 2, 147);
+  ctx.fillText(player.hp + " of " + player.maxHp + " passengers make the conga line at 8pm sharp.", VIEW_W / 2, 147);
   ctx.fillStyle = "#fff";
   ctx.fillText("FINAL SCORE: " + score + "   ALIENS SPLATTED: " + kills, VIEW_W / 2, 170);
   // confetti
@@ -1391,7 +1479,10 @@ window.__aod = {
   get kills() { return kills; },
   get player() { return player; },
   get aliens() { return aliens; },
+  get passengers() { return passengers; },
   get cam() { return { x: camX, y: camY }; },
+  damage(n) { player.invulnT = 0; damagePlayer(n); },
+  heal(n) { return healPlayer(n); },
 };
 
 // ---------------------------------------------------------- loop
