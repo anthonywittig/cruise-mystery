@@ -746,16 +746,18 @@ const keys = {};
 // one hand per player on a split keyboard (e.g. Glove80 halves)
 const P1_KEYS = {
   up: ["w"], down: ["s"], left: ["a"], right: ["d"],
-  fire: [" ", "f", "g", "v"], cycle: ["q", "e"], select: ["1", "2", "3"],
+  // backspace/tab sit on the Glove80's left thumb cluster (no space on that half)
+  fire: ["backspace", "f", "g", "v", "tab"], cycle: ["q", "e"], select: ["1", "2", "3"],
 };
 const P2_KEYS = {
   up: ["i", "arrowup"], down: ["k", "arrowdown"],
   left: ["j", "arrowleft"], right: ["l", "arrowright"],
-  fire: ["h", "n", ";", "'"], cycle: ["u", "o"], select: ["8", "9", "0"],
+  // space sits on the Glove80's right thumb cluster
+  fire: [" ", "h", "n", ";", "'"], cycle: ["u", "o"], select: ["8", "9", "0"],
 };
 function anyDown(list) { for (const k of list) if (keys[k]) return true; return false; }
 
-const PREVENT = new Set(["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", " ", "'"]);
+const PREVENT = new Set(["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", " ", "'", "Tab", "Backspace"]);
 window.addEventListener("keydown", (e) => {
   if (PREVENT.has(e.key)) e.preventDefault();
   const k = e.key.toLowerCase();
@@ -1495,13 +1497,13 @@ function renderTitle() {
   ctx.fillStyle = "#fff";
   const p1Lines = [
     "W A S D ........ move",
-    "SPACE or F ..... throw",
+    "BKSP or F ...... throw",
     "Q / E .......... switch item",
     "1 2 3 .......... pick item",
   ];
   const p2Lines = [
     "I J K L ........ move",
-    "H or N ......... throw",
+    "SPACE or H ..... throw",
     "U / O .......... switch item",
     "8 9 0 .......... pick item",
   ];

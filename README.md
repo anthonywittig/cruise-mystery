@@ -23,7 +23,7 @@ last walked, so no mouse is needed.
 | Action | Player 1 (left hand) | Player 2 (right hand) |
 | --- | --- | --- |
 | Move | W A S D | I J K L (or arrows) |
-| Throw | Space, F, G, or V | H, N, `;`, or `'` |
+| Throw | Backspace, F, G, or Tab | Space, H, N, or `;` |
 | Switch item | Q / E | U / O |
 | Pick item | 1 / 2 / 3 | 8 / 9 / 0 |
 
