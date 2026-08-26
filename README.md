@@ -32,6 +32,30 @@ Shared: **P** or **Esc** pauses, **M** mutes, **Enter** starts.
 The screen is split down the middle — each player gets their own camera
 centered on their tourist. P1 wears the red hawaiian shirt, P2 the blue one.
 
+### Let an AI play player 2 (MCP)
+
+The repo ships a Model Context Protocol server ([mcp-server.mjs](mcp-server.mjs))
+so an AI — e.g. Claude Code — can play player 2. Because an LLM can't react
+frame-by-frame, the AI issues **standing intents** (attack, move_to, collect,
+restock, follow, stop) and the game executes them every frame with BFS
+pathfinding, line-of-fire checks, and auto-aim. The AI just polls `game_state`
+every second or two and changes the intent when the situation changes.
+
+```sh
+npm install
+claude mcp add aliens-p2 -- node "$PWD/mcp-server.mjs"
+```
+
+Then serve and open the game (`npm run serve` → http://localhost:8321). The
+page attaches to the bridge on `ws://localhost:8322` within a few seconds,
+and P2 shows a `·AI` tag while under AI control. In a Claude session, try:
+*"Look at game_state and play player 2 — keep the passengers alive."*
+
+Tools: `game_state`, `player2_command`, `press_key`. Sending
+`{action: "release"}` (or the MCP server disconnecting) hands player 2 back
+to the human. The game keeps simulating in a hidden tab, so the AI can play
+in the background.
+
 ### Arsenal
 
 - **Bingo cards** — fast flicking fire, you'll never run out at the bingo hall
