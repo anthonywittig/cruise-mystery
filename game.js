@@ -10,8 +10,10 @@ const canvas = document.getElementById("game");
 const ctx = canvas.getContext("2d");
 ctx.imageSmoothingEnabled = false;
 
-const VIEW_W = canvas.width;    // 480
+const VIEW_W = 480;             // width of each player's viewport
 const VIEW_H = canvas.height;   // 320
+const SPLIT_GAP = 4;            // divider between the two views
+const CANVAS_W = canvas.width;  // 964 = two viewports + divider
 const TILE = 16;
 
 // world grid
@@ -198,6 +200,27 @@ const PLAYER_SPR = {
   right: [P_SIDE_0, P_SIDE_1],
   left: [flipH(P_SIDE_0), flipH(P_SIDE_1)],
 };
+
+// player 2: same tourist, blue hawaiian shirt & maroon shorts
+function swapColors(img, from, to) {
+  const c = document.createElement("canvas");
+  c.width = img.width; c.height = img.height;
+  const g = c.getContext("2d");
+  g.drawImage(img, 0, 0);
+  const d = g.getImageData(0, 0, c.width, c.height);
+  for (let i = 0; i < d.data.length; i += 4) {
+    if (d.data[i] === from[0] && d.data[i + 1] === from[1] && d.data[i + 2] === from[2]) {
+      d.data[i] = to[0]; d.data[i + 1] = to[1]; d.data[i + 2] = to[2];
+    }
+  }
+  g.putImageData(d, 0, 0);
+  return c;
+}
+const PLAYER_SPR2 = {};
+for (const dir in PLAYER_SPR)
+  PLAYER_SPR2[dir] = PLAYER_SPR[dir].map(f =>
+    swapColors(swapColors(f, [232, 72, 77], [59, 143, 232]),  // shirt red -> blue
+               [59, 92, 143], [143, 59, 92]));                // shorts navy -> maroon
 
 // --- passengers: recolor player sheet
 function recolor(rows, pal) { return sheet(rows, pal); }
@@ -460,8 +483,8 @@ function randomWalkableTile(minDistFromPlayer) {
     const ty = 5 + Math.floor(Math.random() * (GRID_H - 10));
     if (isSolidTile(tx, ty)) continue;
     const px = tx * TILE + 8, py = ty * TILE + 8;
-    if (minDistFromPlayer && player &&
-        Math.hypot(px - player.x, py - player.y) < minDistFromPlayer) continue;
+    if (minDistFromPlayer && players &&
+        players.some(pl => Math.hypot(px - pl.x, py - pl.y) < minDistFromPlayer)) continue;
     return { x: px, y: py };
   }
   return { x: CX * TILE, y: 30 * TILE };
@@ -480,21 +503,31 @@ const WEAPONS = [
 // ---------------------------------------------------------- state
 const FINAL_WAVE = 10;
 let state = "title"; // title | playing | wavebreak | gameover | victory
-let player, aliens, projectiles, gooProjs, particles, pickups, passengers, portals, floaters;
+let players, crew, aliens, projectiles, gooProjs, particles, pickups, passengers, portals, floaters;
 let wave, score, waveBreakT, shake, time = 0, boss = null;
 let kills = 0;
 
-function resetGame() {
-  player = {
-    x: CX * TILE + 8, y: 38 * TILE, w: 8, h: 10,
-    hp: 10, maxHp: 10, speed: 92, dir: "down", anim: 0, moving: false,
+function makePlayer(i) {
+  return {
+    x: CX * TILE + 8 + (i === 0 ? -14 : 14), y: 38 * TILE, w: 8, h: 10,
+    speed: 92, dir: "down", anim: 0, moving: false,
+    aimX: 0, aimY: 1, // throw in the direction you last walked
     weapon: 0, ammo: WEAPONS.map(w => w.start), fireT: 0, invulnT: 0, refillT: 0,
+    spr: i === 0 ? PLAYER_SPR : PLAYER_SPR2,
+    km: i === 0 ? P1_KEYS : P2_KEYS,
+    label: "P" + (i + 1), color: i === 0 ? "#ffd23e" : "#7dc4ff",
   };
+}
+
+function resetGame() {
+  // the shared passenger pool is both players' health
+  crew = { hp: 10, maxHp: 10 };
+  players = [makePlayer(0), makePlayer(1)];
   aliens = []; projectiles = []; gooProjs = []; particles = [];
   pickups = []; portals = []; floaters = [];
   // your health IS the passenger list: one passenger per hit point
   passengers = [];
-  for (let i = 0; i < player.maxHp; i++) {
+  for (let i = 0; i < crew.maxHp; i++) {
     const p = randomWalkableTile(0);
     passengers.push(makePassenger(p.x, p.y, 0));
   }
@@ -515,7 +548,7 @@ function startWave() {
   if (wave === FINAL_WAVE) {
     // boss portal on the pool deck
     portals.push({ x: CX * TILE + 8, y: 22 * TILE + 8, queue: ["boss"], t: 2.5, interval: 1 });
-    floatText("!! THE BROODMOTHER APPROACHES !!", player.x, player.y - 40, "#ff6ec7", 4);
+    players.forEach(p => floatText("!! THE BROODMOTHER APPROACHES !!", p.x, p.y - 40, "#ff6ec7", 4));
     return;
   }
   const nPortals = Math.min(1 + Math.floor((wave - 1) / 2), 4);
@@ -589,14 +622,14 @@ function abductPassengers(n, fromX, fromY) {
   if (alive.length > 0) sfx.abduct();
 }
 
-// abducted passengers beam back down near the player
-function returnPassengers(n) {
+// abducted passengers beam back down near the rescuing player
+function returnPassengers(p, n) {
   for (let i = 0; i < n; i++) {
     let pos = null;
     for (let tries = 0; tries < 60; tries++) {
       const ang = Math.random() * Math.PI * 2;
       const d = 24 + Math.random() * 40;
-      const px = player.x + Math.cos(ang) * d, py = player.y + Math.sin(ang) * d;
+      const px = p.x + Math.cos(ang) * d, py = p.y + Math.sin(ang) * d;
       if (!boxSolid(px - 4, py - 5, px + 4, py + 5)) { pos = { x: px, y: py }; break; }
     }
     if (!pos) pos = randomWalkableTile(0);
@@ -606,23 +639,23 @@ function returnPassengers(n) {
   if (n > 0) sfx.rescue();
 }
 
-function damagePlayer(dmg) {
-  const before = player.hp;
-  player.hp = Math.max(0, player.hp - dmg);
-  player.invulnT = 1.0;
+function damagePlayer(p, dmg) {
+  const before = crew.hp;
+  crew.hp = Math.max(0, crew.hp - dmg);
+  p.invulnT = 1.0;
   sfx.hurt();
-  abductPassengers(before - player.hp, player.x, player.y);
-  if (player.hp <= 0) {
+  abductPassengers(before - crew.hp, p.x, p.y);
+  if (crew.hp <= 0) {
     state = "gameover";
     sfx.gameover();
-    burst(player.x, player.y, "#e8484d", 30);
+    players.forEach(q => burst(q.x, q.y, "#e8484d", 30));
   }
 }
 
-function healPlayer(n) {
-  const gained = Math.min(n, player.maxHp - player.hp);
-  player.hp += gained;
-  returnPassengers(gained);
+function healPlayer(p, n) {
+  const gained = Math.min(n, crew.maxHp - crew.hp);
+  crew.hp += gained;
+  returnPassengers(p, gained);
   return gained;
 }
 
@@ -668,12 +701,15 @@ const flow = new Int16Array(GRID_W * GRID_H);
 const flowQueue = new Int32Array(GRID_W * GRID_H);
 let flowT = 0;
 function computeFlow() {
+  // multi-source BFS: distance to the NEAREST player
   flow.fill(-1);
-  const ptx = Math.floor(player.x / TILE), pty = Math.floor(player.y / TILE);
-  if (isSolidTile(ptx, pty)) return;
   let head = 0, tail = 0;
-  flowQueue[tail++] = pty * GRID_W + ptx;
-  flow[pty * GRID_W + ptx] = 0;
+  for (const p of players) {
+    const ptx = Math.floor(p.x / TILE), pty = Math.floor(p.y / TILE);
+    if (isSolidTile(ptx, pty)) continue;
+    const idx = pty * GRID_W + ptx;
+    if (flow[idx] < 0) { flow[idx] = 0; flowQueue[tail++] = idx; }
+  }
   while (head < tail) {
     const idx = flowQueue[head++];
     const tx = idx % GRID_W, ty = (idx / GRID_W) | 0;
@@ -706,48 +742,52 @@ function chaseDir(a, dx, dy, dist) {
 
 // ---------------------------------------------------------- input
 const keys = {};
-let mouseX = VIEW_W / 2, mouseY = VIEW_H / 2, mouseDown = false;
 
+// one hand per player on a split keyboard (e.g. Glove80 halves)
+const P1_KEYS = {
+  up: ["w"], down: ["s"], left: ["a"], right: ["d"],
+  fire: [" ", "f", "g", "v"], cycle: ["q", "e"], select: ["1", "2", "3"],
+};
+const P2_KEYS = {
+  up: ["i", "arrowup"], down: ["k", "arrowdown"],
+  left: ["j", "arrowleft"], right: ["l", "arrowright"],
+  fire: ["h", "n", ";", "'"], cycle: ["u", "o"], select: ["8", "9", "0"],
+};
+function anyDown(list) { for (const k of list) if (keys[k]) return true; return false; }
+
+const PREVENT = new Set(["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", " ", "'"]);
 window.addEventListener("keydown", (e) => {
-  if (["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", " "].includes(e.key)) e.preventDefault();
-  keys[e.key.toLowerCase()] = true;
+  if (PREVENT.has(e.key)) e.preventDefault();
+  const k = e.key.toLowerCase();
+  keys[k] = true;
   initAudio();
-  if (e.key === "1" || e.key === "2" || e.key === "3") {
-    if (player) player.weapon = +e.key - 1;
+  if (players) {
+    for (const p of players) {
+      const si = p.km.select.indexOf(k);
+      if (si >= 0) p.weapon = si;
+      if (p.km.cycle.includes(k)) p.weapon = (p.weapon + 1) % WEAPONS.length;
+    }
   }
-  if (e.key.toLowerCase() === "m") muted = !muted;
-  if (e.key.toLowerCase() === "q" && player)
-    player.weapon = (player.weapon + 1) % WEAPONS.length;
+  if (k === "m") muted = !muted;
   if ((state === "title" || state === "gameover" || state === "victory") &&
       (e.key === "Enter" || e.key === " ")) resetGame();
-  if (state === "playing" && e.key.toLowerCase() === "p") state = "paused";
-  else if (state === "paused" && e.key.toLowerCase() === "p") state = "playing";
+  if (state === "playing" && (k === "p" || k === "escape")) state = "paused";
+  else if (state === "paused" && (k === "p" || k === "escape")) state = "playing";
 });
 window.addEventListener("keyup", (e) => { keys[e.key.toLowerCase()] = false; });
 
-function canvasPos(e) {
-  const r = canvas.getBoundingClientRect();
-  return {
-    x: (e.clientX - r.left) * (VIEW_W / r.width),
-    y: (e.clientY - r.top) * (VIEW_H / r.height),
-  };
-}
-canvas.addEventListener("mousemove", (e) => { const p = canvasPos(e); mouseX = p.x; mouseY = p.y; });
-canvas.addEventListener("mousedown", (e) => {
-  initAudio(); mouseDown = true;
+canvas.addEventListener("mousedown", () => {
+  initAudio();
   if (state === "title" || state === "gameover" || state === "victory") resetGame();
 });
-window.addEventListener("mouseup", () => { mouseDown = false; });
-window.addEventListener("wheel", (e) => {
-  if (!player) return;
-  player.weapon = (player.weapon + (e.deltaY > 0 ? 1 : WEAPONS.length - 1)) % WEAPONS.length;
-});
 
-// ---------------------------------------------------------- camera
-let camX = 0, camY = 0;
+// ---------------------------------------------------------- cameras (one per player)
+const cams = [{ x: 0, y: 0 }, { x: 0, y: 0 }];
 function updateCamera() {
-  camX = Math.max(0, Math.min(WORLD_W - VIEW_W, player.x - VIEW_W / 2));
-  camY = Math.max(0, Math.min(WORLD_H - VIEW_H, player.y - VIEW_H / 2));
+  players.forEach((p, i) => {
+    cams[i].x = Math.max(0, Math.min(WORLD_W - VIEW_W, p.x - VIEW_W / 2));
+    cams[i].y = Math.max(0, Math.min(WORLD_H - VIEW_H, p.y - VIEW_H / 2));
+  });
 }
 
 // ---------------------------------------------------------- update
@@ -755,7 +795,7 @@ function update(dt) {
   time += dt;
   if (state === "paused" || state === "title" || state === "gameover" || state === "victory") return;
 
-  updatePlayer(dt);
+  for (const p of players) updatePlayer(p, dt);
   flowT -= dt;
   if (flowT <= 0) { computeFlow(); flowT = 0.35; }
   updatePortals(dt);
@@ -774,7 +814,7 @@ function update(dt) {
     const pending = portals.some(p => p.queue.length > 0);
     if (!pending && aliens.length === 0) {
       score += wave * 50;
-      floatText("WAVE " + wave + " CLEAR! +" + wave * 50, player.x, player.y - 24, "#ffd23e", 2);
+      players.forEach(p => floatText("WAVE " + wave + " CLEAR! +" + wave * 50, p.x, p.y - 24, "#ffd23e", 2));
       if (wave >= FINAL_WAVE) {
         state = "victory";
         sfx.victory();
@@ -785,13 +825,12 @@ function update(dt) {
   }
 }
 
-function updatePlayer(dt) {
-  const p = player;
+function updatePlayer(p, dt) {
   let dx = 0, dy = 0;
-  if (keys["w"] || keys["arrowup"]) dy -= 1;
-  if (keys["s"] || keys["arrowdown"]) dy += 1;
-  if (keys["a"] || keys["arrowleft"]) dx -= 1;
-  if (keys["d"] || keys["arrowright"]) dx += 1;
+  if (anyDown(p.km.up)) dy -= 1;
+  if (anyDown(p.km.down)) dy += 1;
+  if (anyDown(p.km.left)) dx -= 1;
+  if (anyDown(p.km.right)) dx += 1;
   p.moving = dx !== 0 || dy !== 0;
   if (p.moving) {
     const len = Math.hypot(dx, dy);
@@ -799,21 +838,13 @@ function updatePlayer(dt) {
     p.anim += dt * 10;
     if (Math.abs(dx) > Math.abs(dy)) p.dir = dx > 0 ? "right" : "left";
     else p.dir = dy > 0 ? "down" : "up";
+    // 8-way aim follows the direction you last walked
+    p.aimX = dx / len; p.aimY = dy / len;
   }
   p.fireT -= dt;
   p.invulnT -= dt;
 
-  // aim from mouse (world coords)
-  const aimX = mouseX + camX, aimY = mouseY + camY;
-  if ((mouseDown || keys[" "]) && p.fireT <= 0) {
-    throwWeapon(aimX, aimY);
-  }
-  // face the mouse while shooting
-  if (mouseDown) {
-    const ax = aimX - p.x, ay = aimY - p.y;
-    if (Math.abs(ax) > Math.abs(ay)) p.dir = ax > 0 ? "right" : "left";
-    else p.dir = ay > 0 ? "down" : "up";
-  }
+  if (anyDown(p.km.fire) && p.fireT <= 0) throwWeapon(p);
 
   // station refills
   p.refillT -= dt;
@@ -831,8 +862,7 @@ function updatePlayer(dt) {
   }
 }
 
-function throwWeapon(aimX, aimY) {
-  const p = player;
+function throwWeapon(p) {
   const w = WEAPONS[p.weapon];
   if (p.ammo[p.weapon] <= 0) {
     // auto-switch to a weapon with ammo
@@ -843,7 +873,7 @@ function throwWeapon(aimX, aimY) {
   }
   p.ammo[p.weapon]--;
   p.fireT = w.cooldown;
-  const base = Math.atan2(aimY - p.y, aimX - p.x);
+  const base = Math.atan2(p.aimY, p.aimX);
   for (let i = 0; i < w.count; i++) {
     const off = w.count === 1
       ? (Math.random() - 0.5) * w.spread
@@ -873,13 +903,18 @@ function updatePortals(dt) {
 }
 
 function updateAliens(dt) {
-  const p = player;
   for (let i = aliens.length - 1; i >= 0; i--) {
     const a = aliens[i];
     a.anim += dt * 6;
     a.hitT -= dt;
     if (a.spawnT > 0) { a.spawnT -= dt; continue; }
 
+    // chase whichever tourist is closer
+    let p = players[0], pd = Infinity;
+    for (const pl of players) {
+      const d = Math.hypot(pl.x - a.x, pl.y - a.y);
+      if (d < pd) { pd = d; p = pl; }
+    }
     const dx = p.x - a.x, dy = p.y - a.y;
     const dist = Math.hypot(dx, dy) || 1;
 
@@ -923,15 +958,17 @@ function updateAliens(dt) {
       collideMove(a, v.x * a.speed * dt, v.y * a.speed * dt);
     }
 
-    // contact damage
-    if (p.invulnT <= 0 && rectsOverlap(a, p)) {
-      shake = 4;
-      burst(p.x, p.y, "#e8484d", 8);
-      // knock player back
-      const kx = (p.x - a.x) / dist, ky = (p.y - a.y) / dist;
-      collideMove(p, kx * 12, ky * 12);
-      damagePlayer(a.dmg);
-      if (state === "gameover") return;
+    // contact damage (either player)
+    for (const pl of players) {
+      if (pl.invulnT <= 0 && rectsOverlap(a, pl)) {
+        shake = 4;
+        burst(pl.x, pl.y, "#e8484d", 8);
+        // knock player back
+        const kd = Math.hypot(pl.x - a.x, pl.y - a.y) || 1;
+        collideMove(pl, (pl.x - a.x) / kd * 12, (pl.y - a.y) / kd * 12);
+        damagePlayer(pl, a.dmg);
+        if (state === "gameover") return;
+      }
     }
   }
 }
@@ -985,12 +1022,17 @@ function updateProjectiles(dt) {
       const t = tileAt(Math.floor(g.x / TILE), Math.floor(g.y / TILE));
       if (t !== T_POOL && t !== T_WATER) { dead = true; burst(g.x, g.y, "#8aff3e", 3); }
     }
-    if (!dead && player.invulnT <= 0 &&
-        Math.abs(player.x - g.x) * 2 < player.w + 4 &&
-        Math.abs(player.y - g.y) * 2 < player.h + 4) {
-      shake = 3;
-      dead = true;
-      damagePlayer(1);
+    if (!dead) {
+      for (const pl of players) {
+        if (pl.invulnT <= 0 &&
+            Math.abs(pl.x - g.x) * 2 < pl.w + 4 &&
+            Math.abs(pl.y - g.y) * 2 < pl.h + 4) {
+          shake = 3;
+          dead = true;
+          damagePlayer(pl, 1);
+          break;
+        }
+      }
     }
     if (dead) gooProjs.splice(i, 1);
   }
@@ -1017,13 +1059,14 @@ function updatePickups(dt) {
     const pk = pickups[i];
     pk.t -= dt;
     if (pk.t <= 0) { pickups.splice(i, 1); continue; }
-    if (Math.hypot(pk.x - player.x, pk.y - player.y) < 12) {
+    const taker = players.find(pl => Math.hypot(pk.x - pl.x, pk.y - pl.y) < 12);
+    if (taker) {
       if (pk.kind === "soda") {
-        const got = healPlayer(2);
+        const got = healPlayer(taker, 2);
         floatText(got > 0 ? "+" + got + " PASSENGERS BACK" : "ALL ABOARD ALREADY", pk.x, pk.y - 10, "#7dff7d", 1);
       } else {
         const wi = Math.floor(Math.random() * WEAPONS.length);
-        player.ammo[wi] = Math.min(WEAPONS[wi].max, player.ammo[wi] + Math.ceil(WEAPONS[wi].max / 4));
+        taker.ammo[wi] = Math.min(WEAPONS[wi].max, taker.ammo[wi] + Math.ceil(WEAPONS[wi].max / 4));
         floatText("+" + WEAPONS[wi].name, pk.x, pk.y - 10, "#ffd23e", 1);
       }
       sfx.pickup();
@@ -1118,19 +1161,38 @@ function tileColor(t, tx, ty) {
 function render() {
   ctx.setTransform(1, 0, 0, 1, 0, 0);
   ctx.fillStyle = "#0a1030";
-  ctx.fillRect(0, 0, VIEW_W, VIEW_H);
+  ctx.fillRect(0, 0, CANVAS_W, VIEW_H);
 
   if (state === "title") { renderTitle(); return; }
 
+  for (let vi = 0; vi < players.length; vi++) renderView(vi);
+
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  // divider between the two views
+  ctx.fillStyle = "#2a2a4a";
+  ctx.fillRect(VIEW_W, 0, SPLIT_GAP, VIEW_H);
+  renderHUD();
+  renderOverlays();
+}
+
+// one player's viewport, clipped to their half of the canvas
+function renderView(vi) {
+  const cam = cams[vi];
+  const ox = vi * (VIEW_W + SPLIT_GAP);
   const sx = shake > 0 ? (Math.random() - 0.5) * shake : 0;
   const sy = shake > 0 ? (Math.random() - 0.5) * shake : 0;
-  ctx.setTransform(1, 0, 0, 1, Math.round(-camX + sx), Math.round(-camY + sy));
+  ctx.save();
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.beginPath();
+  ctx.rect(ox, 0, VIEW_W, VIEW_H);
+  ctx.clip();
+  ctx.setTransform(1, 0, 0, 1, Math.round(ox - cam.x + sx), Math.round(-cam.y + sy));
 
   // tiles
-  const tx0 = Math.max(0, Math.floor(camX / TILE) - 1);
-  const ty0 = Math.max(0, Math.floor(camY / TILE) - 1);
-  const tx1 = Math.min(GRID_W - 1, Math.ceil((camX + VIEW_W) / TILE) + 1);
-  const ty1 = Math.min(GRID_H - 1, Math.ceil((camY + VIEW_H) / TILE) + 1);
+  const tx0 = Math.max(0, Math.floor(cam.x / TILE) - 1);
+  const ty0 = Math.max(0, Math.floor(cam.y / TILE) - 1);
+  const tx1 = Math.min(GRID_W - 1, Math.ceil((cam.x + VIEW_W) / TILE) + 1);
+  const ty1 = Math.min(GRID_H - 1, Math.ceil((cam.y + VIEW_H) / TILE) + 1);
   for (let ty = ty0; ty <= ty1; ty++)
     for (let tx = tx0; tx <= tx1; tx++) {
       const t = tileAt(tx, ty);
@@ -1255,11 +1317,19 @@ function render() {
     }
   }
 
-  // player (flash while invulnerable)
-  if (player.invulnT <= 0 || Math.floor(time * 12) % 2 === 0) {
-    const frames = PLAYER_SPR[player.dir];
-    const f = frames[player.moving ? Math.floor(player.anim) % 2 : 0];
-    ctx.drawImage(f, Math.round(player.x - 5), Math.round(player.y - 10));
+  // players (flash while invulnerable), with label + aim tick
+  for (const p of players) {
+    if (p.invulnT <= 0 || Math.floor(time * 12) % 2 === 0) {
+      const frames = p.spr[p.dir];
+      const f = frames[p.moving ? Math.floor(p.anim) % 2 : 0];
+      ctx.drawImage(f, Math.round(p.x - 5), Math.round(p.y - 10));
+    }
+    ctx.fillStyle = p.color;
+    ctx.fillRect(Math.round(p.x + p.aimX * 11) - 1, Math.round(p.y - 3 + p.aimY * 11) - 1, 2, 2);
+    ctx.font = "6px monospace";
+    ctx.textAlign = "center";
+    ctx.fillText(p.label, Math.round(p.x), Math.round(p.y - 13));
+    ctx.textAlign = "left";
   }
 
   // projectiles
@@ -1289,32 +1359,32 @@ function render() {
     ctx.globalAlpha = 1;
   }
   ctx.textAlign = "left";
+  ctx.restore();
+}
 
-  // ---- HUD (screen space)
-  ctx.setTransform(1, 0, 0, 1, 0, 0);
-  renderHUD();
-
+// full-canvas overlays (screen space)
+function renderOverlays() {
   if (state === "wavebreak") {
     ctx.textAlign = "center";
     ctx.fillStyle = "rgba(0,0,0,0.4)";
-    ctx.fillRect(VIEW_W / 2 - 110, 40, 220, 34);
+    ctx.fillRect(CANVAS_W / 2 - 110, 40, 220, 34);
     ctx.fillStyle = "#ffd23e";
     ctx.font = "10px monospace";
     const next = wave + 1;
-    ctx.fillText(next === FINAL_WAVE ? "FINAL WAVE INCOMING..." : "WAVE " + next + " INCOMING...", VIEW_W / 2, 55);
+    ctx.fillText(next === FINAL_WAVE ? "FINAL WAVE INCOMING..." : "WAVE " + next + " INCOMING...", CANVAS_W / 2, 55);
     ctx.fillStyle = "#fff";
-    ctx.fillText(Math.ceil(waveBreakT) + "", VIEW_W / 2, 68);
+    ctx.fillText(Math.ceil(waveBreakT) + "", CANVAS_W / 2, 68);
     ctx.textAlign = "left";
   }
   if (state === "paused") {
     ctx.fillStyle = "rgba(0,0,0,0.55)";
-    ctx.fillRect(0, 0, VIEW_W, VIEW_H);
+    ctx.fillRect(0, 0, CANVAS_W, VIEW_H);
     ctx.fillStyle = "#fff";
     ctx.font = "14px monospace";
     ctx.textAlign = "center";
-    ctx.fillText("PAUSED", VIEW_W / 2, VIEW_H / 2);
+    ctx.fillText("PAUSED", CANVAS_W / 2, VIEW_H / 2);
     ctx.font = "8px monospace";
-    ctx.fillText("press P to resume", VIEW_W / 2, VIEW_H / 2 + 14);
+    ctx.fillText("press P to resume", CANVAS_W / 2, VIEW_H / 2 + 14);
     ctx.textAlign = "left";
   }
   if (state === "gameover") renderGameOver();
@@ -1322,11 +1392,12 @@ function render() {
 }
 
 function renderHUD() {
-  // passenger roster = health: lit icon for each soul still on board
+  // shared passenger roster = health, centered over the divider
   const shirtCols = ["#3fa14d", "#8a4fd0", "#e88f2a", "#2ab5c9", "#d94f9e"];
-  for (let i = 0; i < player.maxHp; i++) {
-    const x = 6 + i * 9, y = 6;
-    const aboard = i < player.hp;
+  const rosterX = Math.round(CANVAS_W / 2 - (crew.maxHp * 9 - 3) / 2);
+  for (let i = 0; i < crew.maxHp; i++) {
+    const x = rosterX + i * 9, y = 6;
+    const aboard = i < crew.hp;
     if (aboard) {
       ctx.fillStyle = "#f2c396";                  // head
       ctx.fillRect(x + 1, y, 4, 3);
@@ -1342,132 +1413,156 @@ function renderHUD() {
     }
   }
   ctx.font = "7px monospace";
-  ctx.fillStyle = player.hp <= 2 ? "#e8484d" : "#b8c4d8";
-  ctx.fillText("PASSENGERS " + player.hp + "/" + player.maxHp, 6, 24);
+  ctx.textAlign = "center";
+  ctx.fillStyle = crew.hp <= 2 ? "#e8484d" : "#b8c4d8";
+  ctx.fillText("PASSENGERS " + crew.hp + "/" + crew.maxHp, CANVAS_W / 2, 24);
+  ctx.textAlign = "left";
   // wave + score
   ctx.font = "8px monospace";
   ctx.textAlign = "right";
   ctx.fillStyle = "#ffd23e";
-  ctx.fillText("WAVE " + Math.max(1, wave) + (state === "wavebreak" ? " (next: " + (wave + 1) + ")" : "") , VIEW_W - 6, 12);
+  ctx.fillText("WAVE " + Math.max(1, wave) + (state === "wavebreak" ? " (next: " + (wave + 1) + ")" : "") , CANVAS_W - 6, 12);
   ctx.fillStyle = "#fff";
-  ctx.fillText("SCORE " + score, VIEW_W - 6, 22);
+  ctx.fillText("SCORE " + score, CANVAS_W - 6, 22);
   ctx.textAlign = "left";
   if (boss) {
     ctx.fillStyle = "#301020";
-    ctx.fillRect(VIEW_W / 2 - 60, 6, 120, 6);
+    ctx.fillRect(CANVAS_W / 2 - 60, 30, 120, 6);
     ctx.fillStyle = "#ff6ec7";
-    ctx.fillRect(VIEW_W / 2 - 60, 6, 120 * (boss.hp / boss.maxHp), 6);
+    ctx.fillRect(CANVAS_W / 2 - 60, 30, 120 * (boss.hp / boss.maxHp), 6);
     ctx.fillStyle = "#fff";
     ctx.font = "7px monospace";
     ctx.textAlign = "center";
-    ctx.fillText("BROODMOTHER", VIEW_W / 2, 20);
+    ctx.fillText("BROODMOTHER", CANVAS_W / 2, 44);
     ctx.textAlign = "left";
   }
 
-  // weapon slots
+  // per-player weapon slots along the bottom of each view
   const slotW = 88, slotH = 20;
-  for (let i = 0; i < WEAPONS.length; i++) {
-    const x = 6 + i * (slotW + 4), y = VIEW_H - slotH - 6;
-    const w = WEAPONS[i];
-    ctx.fillStyle = i === player.weapon ? "rgba(255,210,62,0.25)" : "rgba(0,0,0,0.45)";
-    ctx.fillRect(x, y, slotW, slotH);
-    ctx.strokeStyle = i === player.weapon ? "#ffd23e" : "#555577";
-    ctx.lineWidth = 1;
-    ctx.strokeRect(x + 0.5, y + 0.5, slotW - 1, slotH - 1);
-    ctx.drawImage(w.spr, x + 4, y + Math.floor((slotH - w.spr.height) / 2));
+  players.forEach((p, vi) => {
+    const ox = vi * (VIEW_W + SPLIT_GAP);
     ctx.font = "7px monospace";
-    ctx.fillStyle = player.ammo[i] === 0 ? "#e8484d" : "#fff";
-    ctx.fillText("[" + (i + 1) + "] " + w.name, x + 15, y + 8);
-    ctx.fillText("x" + player.ammo[i], x + 15, y + 16);
-  }
+    ctx.fillStyle = p.color;
+    ctx.fillText(p.label, ox + 6, VIEW_H - slotH - 10);
+    for (let i = 0; i < WEAPONS.length; i++) {
+      const x = ox + 6 + i * (slotW + 4), y = VIEW_H - slotH - 6;
+      const w = WEAPONS[i];
+      ctx.fillStyle = i === p.weapon ? "rgba(255,210,62,0.25)" : "rgba(0,0,0,0.45)";
+      ctx.fillRect(x, y, slotW, slotH);
+      ctx.strokeStyle = i === p.weapon ? p.color : "#555577";
+      ctx.lineWidth = 1;
+      ctx.strokeRect(x + 0.5, y + 0.5, slotW - 1, slotH - 1);
+      ctx.drawImage(w.spr, x + 4, y + Math.floor((slotH - w.spr.height) / 2));
+      ctx.fillStyle = p.ammo[i] === 0 ? "#e8484d" : "#fff";
+      ctx.fillText("[" + p.km.select[i] + "] " + w.name, x + 15, y + 8);
+      ctx.fillText("x" + p.ammo[i], x + 15, y + 16);
+    }
+  });
 }
 
 function renderTitle() {
   // animated ocean
   for (let ty = 0; ty < VIEW_H / TILE; ty++)
-    for (let tx = 0; tx < VIEW_W / TILE; tx++) {
+    for (let tx = 0; tx < Math.ceil(CANVAS_W / TILE); tx++) {
       ctx.fillStyle = tileColor(T_WATER, tx, ty);
       ctx.fillRect(tx * TILE, ty * TILE, TILE, TILE);
     }
   // little ship silhouette cruising by
-  const shipX = (time * 20) % (VIEW_W + 160) - 80;
+  const shipX = (time * 20) % (CANVAS_W + 160) - 80;
   ctx.fillStyle = "#e8e4da";
-  ctx.fillRect(shipX, 230, 70, 12);
-  ctx.fillRect(shipX + 8, 222, 54, 8);
-  ctx.fillRect(shipX + 18, 214, 30, 8);
+  ctx.fillRect(shipX, 282, 70, 12);
+  ctx.fillRect(shipX + 8, 274, 54, 8);
+  ctx.fillRect(shipX + 18, 266, 30, 8);
   ctx.fillStyle = "#e8484d";
-  ctx.fillRect(shipX + 30, 208, 8, 6);
+  ctx.fillRect(shipX + 30, 260, 8, 6);
 
   ctx.textAlign = "center";
   ctx.fillStyle = "#a5ff9e";
   ctx.font = "26px monospace";
-  ctx.fillText("ALIENS ON DECK!", VIEW_W / 2, 74);
+  ctx.fillText("ALIENS ON DECK!", CANVAS_W / 2, 64);
   ctx.fillStyle = "#ffd23e";
   ctx.font = "9px monospace";
-  ctx.fillText("the S.S. Starlight is under attack —", VIEW_W / 2, 96);
-  ctx.fillText("fight back with the finest cruise amenities!", VIEW_W / 2, 108);
+  ctx.fillText("the S.S. Starlight is under attack — grab a buddy:", CANVAS_W / 2, 86);
+  ctx.fillText("two tourists, one keyboard, half each!", CANVAS_W / 2, 98);
 
-  ctx.fillStyle = "#fff";
+  // one control column per player, over their side of the screen
   ctx.font = "8px monospace";
-  const lines = [
-    "WASD / ARROWS ........ move",
-    "MOUSE + CLICK ........ aim & throw",
-    "1 / 2 / 3 or Q ....... switch item",
-    "BINGO CARDS .... fast | PLATES .... heavy, pierce",
-    "FREE CHARMS .......... spread shot",
+  const c1 = CANVAS_W * 0.27, c2 = CANVAS_W * 0.73;
+  ctx.fillStyle = "#ffd23e";
+  ctx.fillText("PLAYER 1 — left hand", c1, 124);
+  ctx.fillStyle = "#7dc4ff";
+  ctx.fillText("PLAYER 2 — right hand", c2, 124);
+  ctx.fillStyle = "#fff";
+  const p1Lines = [
+    "W A S D ........ move",
+    "SPACE or F ..... throw",
+    "Q / E .......... switch item",
+    "1 2 3 .......... pick item",
+  ];
+  const p2Lines = [
+    "I J K L ........ move",
+    "H or N ......... throw",
+    "U / O .......... switch item",
+    "8 9 0 .......... pick item",
+  ];
+  p1Lines.forEach((l, i) => ctx.fillText(l, c1, 140 + i * 12));
+  p2Lines.forEach((l, i) => ctx.fillText(l, c2, 140 + i * 12));
+
+  const shared = [
+    "you throw in the direction you last walked",
     "restock at the BUFFET, BINGO hall & gift SHOP",
-    "every hit you take, a PASSENGER is abducted!",
+    "every hit EITHER of you takes, a PASSENGER is abducted!",
     "grab sodas to beam them back — lose all 10 & it's over",
     "P pause   M mute",
   ];
-  lines.forEach((l, i) => ctx.fillText(l, VIEW_W / 2, 134 + i * 12));
+  shared.forEach((l, i) => ctx.fillText(l, CANVAS_W / 2, 196 + i * 12));
 
   if (Math.floor(time * 2) % 2 === 0) {
     ctx.fillStyle = "#a5ff9e";
     ctx.font = "10px monospace";
-    ctx.fillText("- PRESS ENTER OR CLICK TO BOARD -", VIEW_W / 2, 260);
+    ctx.fillText("- PRESS ENTER OR CLICK TO BOARD -", CANVAS_W / 2, 288);
   }
   ctx.textAlign = "left";
 }
 
 function renderGameOver() {
   ctx.fillStyle = "rgba(20,0,10,0.7)";
-  ctx.fillRect(0, 0, VIEW_W, VIEW_H);
+  ctx.fillRect(0, 0, CANVAS_W, VIEW_H);
   ctx.textAlign = "center";
   ctx.fillStyle = "#e8484d";
   ctx.font = "22px monospace";
-  ctx.fillText("ALL ABDUCTED!", VIEW_W / 2, 120);
+  ctx.fillText("ALL ABDUCTED!", CANVAS_W / 2, 120);
   ctx.fillStyle = "#fff";
   ctx.font = "9px monospace";
-  ctx.fillText("every last passenger was beamed away... even the cruise director", VIEW_W / 2, 145);
-  ctx.fillText("SCORE: " + score + "   WAVES: " + wave + "   ALIENS SPLATTED: " + kills, VIEW_W / 2, 165);
+  ctx.fillText("every last passenger was beamed away... even the cruise director", CANVAS_W / 2, 145);
+  ctx.fillText("SCORE: " + score + "   WAVES: " + wave + "   ALIENS SPLATTED: " + kills, CANVAS_W / 2, 165);
   if (Math.floor(time * 2) % 2 === 0)
-    ctx.fillText("- PRESS ENTER TO TRY AGAIN -", VIEW_W / 2, 200);
+    ctx.fillText("- PRESS ENTER TO TRY AGAIN -", CANVAS_W / 2, 200);
   ctx.textAlign = "left";
 }
 
 function renderVictory() {
   ctx.fillStyle = "rgba(0,10,25,0.7)";
-  ctx.fillRect(0, 0, VIEW_W, VIEW_H);
+  ctx.fillRect(0, 0, CANVAS_W, VIEW_H);
   ctx.textAlign = "center";
   ctx.fillStyle = "#ffd23e";
   ctx.font = "20px monospace";
-  ctx.fillText("SHIP SAVED!", VIEW_W / 2, 110);
+  ctx.fillText("SHIP SAVED!", CANVAS_W / 2, 110);
   ctx.fillStyle = "#a5ff9e";
   ctx.font = "9px monospace";
-  ctx.fillText("the Broodmother is defeated —", VIEW_W / 2, 135);
-  ctx.fillText(player.hp + " of " + player.maxHp + " passengers make the conga line at 8pm sharp.", VIEW_W / 2, 147);
+  ctx.fillText("the Broodmother is defeated by the dynamic tourist duo —", CANVAS_W / 2, 135);
+  ctx.fillText(crew.hp + " of " + crew.maxHp + " passengers make the conga line at 8pm sharp.", CANVAS_W / 2, 147);
   ctx.fillStyle = "#fff";
-  ctx.fillText("FINAL SCORE: " + score + "   ALIENS SPLATTED: " + kills, VIEW_W / 2, 170);
+  ctx.fillText("FINAL SCORE: " + score + "   ALIENS SPLATTED: " + kills, CANVAS_W / 2, 170);
   // confetti
-  for (let i = 0; i < 40; i++) {
-    const x = (i * 137 + time * 40) % VIEW_W;
+  for (let i = 0; i < 80; i++) {
+    const x = (i * 137 + time * 40) % CANVAS_W;
     const y = (i * 61 + time * (30 + (i % 5) * 10)) % VIEW_H;
     ctx.fillStyle = ["#e8484d", "#ffd23e", "#4fd05a", "#2ad0b5", "#ff6ec7"][i % 5];
     ctx.fillRect(x, y, 3, 3);
   }
   if (Math.floor(time * 2) % 2 === 0)
-    ctx.fillText("- PRESS ENTER FOR ANOTHER CRUISE -", VIEW_W / 2, 215);
+    ctx.fillText("- PRESS ENTER FOR ANOTHER CRUISE -", CANVAS_W / 2, 215);
   ctx.textAlign = "left";
 }
 
@@ -1477,12 +1572,15 @@ window.__aod = {
   get wave() { return wave; },
   get score() { return score; },
   get kills() { return kills; },
-  get player() { return player; },
+  get player() { return players && players[0]; },
+  get players() { return players; },
+  get crew() { return crew; },
   get aliens() { return aliens; },
   get passengers() { return passengers; },
-  get cam() { return { x: camX, y: camY }; },
-  damage(n) { player.invulnT = 0; damagePlayer(n); },
-  heal(n) { return healPlayer(n); },
+  get cam() { return { x: cams[0].x, y: cams[0].y }; },
+  get cams() { return cams; },
+  damage(n) { players[0].invulnT = 0; damagePlayer(players[0], n); },
+  heal(n) { return healPlayer(players[0], n); },
 };
 
 // ---------------------------------------------------------- loop
