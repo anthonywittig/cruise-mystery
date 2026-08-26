@@ -19,15 +19,14 @@ html, body {
 }
 
 #game {
-  width: 960px;
-  max-width: 96vw;
+  width: 1400px;
+  max-width: 97vw;
   max-height: 92vh;
-  aspect-ratio: 3 / 2;
+  aspect-ratio: 964 / 320;
   height: auto;
   image-rendering: pixelated;
   image-rendering: crisp-edges;
   background: #000;
-  cursor: crosshair;
 }
 
 /* subtle CRT scanlines */

@@ -1,8 +1,9 @@
 # Aliens on Deck! 🛳️👾
 
-A retro top-down 2D arcade game. Aliens are taking over the **S.S. Starlight**
-mid-cruise, and the only weapons on board are the finest cruise ship amenities:
-bingo cards, buffet plates, and free jewelry charms.
+A retro top-down 2D arcade game for **two players in co-op**. Aliens are taking
+over the **S.S. Starlight** mid-cruise, and the only weapons on board are the
+finest cruise ship amenities: bingo cards, buffet plates, and free jewelry
+charms.
 
 ## How to play
 
@@ -15,14 +16,21 @@ npx serve .
 
 ### Controls
 
-| Input | Action |
-| --- | --- |
-| WASD / Arrow keys | Move |
-| Mouse + click (hold) | Aim & throw |
-| 1 / 2 / 3, Q, or scroll | Switch item |
-| Space | Throw toward mouse |
-| P | Pause |
-| M | Mute |
+Designed for two players sharing one keyboard — each player needs only one
+half of a split keyboard (e.g. a Glove80). You throw in the direction you
+last walked, so no mouse is needed.
+
+| Action | Player 1 (left hand) | Player 2 (right hand) |
+| --- | --- | --- |
+| Move | W A S D | I J K L (or arrows) |
+| Throw | Space, F, G, or V | H, N, `;`, or `'` |
+| Switch item | Q / E | U / O |
+| Pick item | 1 / 2 / 3 | 8 / 9 / 0 |
+
+Shared: **P** or **Esc** pauses, **M** mutes, **Enter** starts.
+
+The screen is split down the middle — each player gets their own camera
+centered on their tourist. P1 wears the red hawaiian shirt, P2 the blue one.
 
 ### Arsenal
 
@@ -35,10 +43,11 @@ Ammo runs out! Stand near the **BUFFET**, the **BINGO** hall, or the gift
 
 ### Your health is the passenger list
 
-Ten passengers stroll the decks — and they ARE your hit points. Every hit you
-take, the aliens tractor-beam a passenger (the nearest ones to the fight) up
-into the sky. Grab a soda and abducted passengers beam back down beside you.
-When the last passenger is taken, the cruise is over.
+Ten passengers stroll the decks — and they are the **shared** hit points for
+both players. Every hit either of you takes, the aliens tractor-beam a
+passenger (the nearest ones to the fight) up into the sky. Grab a soda and
+abducted passengers beam back down beside whoever drank it. When the last
+passenger is taken, the cruise is over for both of you.
 
 ### The enemy
 
@@ -51,5 +60,7 @@ midnight buffet.
 
 Vanilla JavaScript + HTML5 Canvas. All pixel-art sprites are generated at
 runtime from ASCII art maps, sounds are synthesized with WebAudio, and aliens
-navigate the ship's rooms and doors using a BFS flow field. Rendered at
-480×320 and upscaled with crisp pixels for that old-school feel.
+navigate the ship's rooms and doors using a multi-source BFS flow field
+(they chase whichever player is closer). Each player's view is a 480×320
+viewport rendered side by side and upscaled with crisp pixels for that
+old-school feel.
