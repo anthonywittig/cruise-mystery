@@ -792,6 +792,127 @@ function updateCamera() {
   });
 }
 
+// ---------------------------------------------------------- AI player 2 (MCP bridge)
+// An MCP server (mcp-server.mjs) can drive player 2 over a local WebSocket.
+// The AI sets a persistent intent; aiThink() executes it every frame with
+// pathfinding, aiming and firing, so the AI only needs to issue a command
+// when the situation changes.
+const ai = {
+  enabled: false, intent: null,
+  flow: new Int16Array(GRID_W * GRID_H), flowTarget: -1,
+};
+
+// BFS flow field toward an arbitrary tile (separate from the alien one)
+function computeAiFlow(ttx, tty) {
+  ai.flowTarget = tty * GRID_W + ttx;
+  ai.flow.fill(-1);
+  let head = 0, tail = 0;
+  ai.flow[ai.flowTarget] = 0;
+  flowQueue[tail++] = ai.flowTarget;
+  while (head < tail) {
+    const idx = flowQueue[head++];
+    const tx = idx % GRID_W, ty = (idx / GRID_W) | 0;
+    const d = ai.flow[idx] + 1;
+    if (tx > 0 && !isSolidTile(tx - 1, ty) && ai.flow[idx - 1] < 0) { ai.flow[idx - 1] = d; flowQueue[tail++] = idx - 1; }
+    if (tx < GRID_W - 1 && !isSolidTile(tx + 1, ty) && ai.flow[idx + 1] < 0) { ai.flow[idx + 1] = d; flowQueue[tail++] = idx + 1; }
+    if (ty > 0 && !isSolidTile(tx, ty - 1) && ai.flow[idx - GRID_W] < 0) { ai.flow[idx - GRID_W] = d; flowQueue[tail++] = idx - GRID_W; }
+    if (ty < GRID_H - 1 && !isSolidTile(tx, ty + 1) && ai.flow[idx + GRID_W] < 0) { ai.flow[idx + GRID_W] = d; flowQueue[tail++] = idx + GRID_W; }
+  }
+}
+
+function aiMoveToward(p, X, Y, out, stopDist) {
+  const dist = Math.hypot(X - p.x, Y - p.y);
+  if (dist <= stopDist) return;
+  const ttx = Math.floor(X / TILE), tty = Math.floor(Y / TILE);
+  if (isSolidTile(ttx, tty) || dist < 40) {
+    out.dx = (X - p.x) / dist; out.dy = (Y - p.y) / dist;
+    return;
+  }
+  if (ai.flowTarget !== tty * GRID_W + ttx) computeAiFlow(ttx, tty);
+  const tx = Math.floor(p.x / TILE), ty = Math.floor(p.y / TILE);
+  const here = ai.flow[ty * GRID_W + tx];
+  if (here <= 0) {
+    out.dx = (X - p.x) / dist; out.dy = (Y - p.y) / dist;
+    return;
+  }
+  let best = here, bx = tx, by = ty;
+  for (const [cx, cy] of [[tx - 1, ty], [tx + 1, ty], [tx, ty - 1], [tx, ty + 1]]) {
+    if (cx < 0 || cy < 0 || cx >= GRID_W || cy >= GRID_H) continue;
+    const f = ai.flow[cy * GRID_W + cx];
+    if (f >= 0 && f < best) { best = f; bx = cx; by = cy; }
+  }
+  const gx = bx * TILE + TILE / 2 - p.x, gy = by * TILE + TILE / 2 - p.y;
+  const gl = Math.hypot(gx, gy) || 1;
+  out.dx = gx / gl; out.dy = gy / gl;
+}
+
+function aiNearest(arr, x, y) {
+  let best = null, bd = Infinity;
+  for (const e of arr) {
+    const d = Math.hypot(e.x - x, e.y - y);
+    if (d < bd) { bd = d; best = e; }
+  }
+  return best;
+}
+
+// can a thrown item fly from a to b? (throws pass over water & pool)
+function shotClear(x0, y0, x1, y1) {
+  const dist = Math.hypot(x1 - x0, y1 - y0) || 1;
+  const steps = Math.ceil(dist / 6);
+  for (let i = 1; i < steps; i++) {
+    const t = tileAt(Math.floor((x0 + (x1 - x0) * i / steps) / TILE),
+                     Math.floor((y0 + (y1 - y0) * i / steps) / TILE));
+    if (SOLID.has(t) && t !== T_WATER && t !== T_POOL) return false;
+  }
+  return true;
+}
+
+function aiThink(p) {
+  const out = { dx: 0, dy: 0, fire: false };
+  const intent = ai.intent;
+  if (!intent) return out;
+  switch (intent.action) {
+    case "move_to":
+      aiMoveToward(p, intent.x || 0, intent.y || 0, out, 6);
+      break;
+    case "follow":
+      aiMoveToward(p, players[0].x, players[0].y, out, 36);
+      break;
+    case "collect": {
+      const pk = aiNearest(pickups, p.x, p.y);
+      if (pk) aiMoveToward(p, pk.x, pk.y, out, 2);
+      break;
+    }
+    case "restock": {
+      const st = stations.find(s => s.type === intent.weapon) ||
+                 stations.find(s => s.type === WEAPONS[p.weapon].key);
+      if (st) aiMoveToward(p, st.x, st.y, out, 24);
+      break;
+    }
+    case "attack": {
+      const ready = aliens.filter(a => a.spawnT <= 0);
+      const target = intent.x !== undefined
+        ? aiNearest(ready, intent.x, intent.y)
+        : aiNearest(ready, p.x, p.y);
+      if (!target) break;
+      const d = Math.hypot(target.x - p.x, target.y - p.y) || 1;
+      const w = WEAPONS[p.weapon];
+      const range = Math.min(w.speed * w.life * 0.75, 170);
+      const clear = shotClear(p.x, p.y - 4, target.x, target.y);
+      if (d > range || !clear) aiMoveToward(p, target.x, target.y, out, 30);
+      else if (d < 55) { out.dx = (p.x - target.x) / d; out.dy = (p.y - target.y) / d; } // keep distance
+      if (clear && d < range) {
+        const ax = target.x - p.x, ay = target.y - (p.y - 4);
+        const al = Math.hypot(ax, ay) || 1;
+        out.aimX = ax / al; out.aimY = ay / al;
+        out.fire = true;
+      }
+      break;
+    }
+  }
+  return out;
+}
+
 // ---------------------------------------------------------- update
 function update(dt) {
   time += dt;
@@ -828,11 +949,16 @@ function update(dt) {
 }
 
 function updatePlayer(p, dt) {
-  let dx = 0, dy = 0;
-  if (anyDown(p.km.up)) dy -= 1;
-  if (anyDown(p.km.down)) dy += 1;
-  if (anyDown(p.km.left)) dx -= 1;
-  if (anyDown(p.km.right)) dx += 1;
+  let dx = 0, dy = 0, aiCmd = null;
+  if (ai.enabled && p === players[1]) {
+    aiCmd = aiThink(p);
+    dx = aiCmd.dx; dy = aiCmd.dy;
+  } else {
+    if (anyDown(p.km.up)) dy -= 1;
+    if (anyDown(p.km.down)) dy += 1;
+    if (anyDown(p.km.left)) dx -= 1;
+    if (anyDown(p.km.right)) dx += 1;
+  }
   p.moving = dx !== 0 || dy !== 0;
   if (p.moving) {
     const len = Math.hypot(dx, dy);
@@ -843,10 +969,11 @@ function updatePlayer(p, dt) {
     // 8-way aim follows the direction you last walked
     p.aimX = dx / len; p.aimY = dy / len;
   }
+  if (aiCmd && aiCmd.aimX !== undefined) { p.aimX = aiCmd.aimX; p.aimY = aiCmd.aimY; }
   p.fireT -= dt;
   p.invulnT -= dt;
 
-  if (anyDown(p.km.fire) && p.fireT <= 0) throwWeapon(p);
+  if ((aiCmd ? aiCmd.fire : anyDown(p.km.fire)) && p.fireT <= 0) throwWeapon(p);
 
   // station refills
   p.refillT -= dt;
@@ -1330,7 +1457,8 @@ function renderView(vi) {
     ctx.fillRect(Math.round(p.x + p.aimX * 11) - 1, Math.round(p.y - 3 + p.aimY * 11) - 1, 2, 2);
     ctx.font = "6px monospace";
     ctx.textAlign = "center";
-    ctx.fillText(p.label, Math.round(p.x), Math.round(p.y - 13));
+    const tag = ai.enabled && p === players[1] ? p.label + "·AI" : p.label;
+    ctx.fillText(tag, Math.round(p.x), Math.round(p.y - 13));
     ctx.textAlign = "left";
   }
 
@@ -1445,7 +1573,7 @@ function renderHUD() {
     const ox = vi * (VIEW_W + SPLIT_GAP);
     ctx.font = "7px monospace";
     ctx.fillStyle = p.color;
-    ctx.fillText(p.label, ox + 6, VIEW_H - slotH - 10);
+    ctx.fillText(ai.enabled && vi === 1 ? p.label + "·AI" : p.label, ox + 6, VIEW_H - slotH - 10);
     for (let i = 0; i < WEAPONS.length; i++) {
       const x = ox + 6 + i * (slotW + 4), y = VIEW_H - slotH - 6;
       const w = WEAPONS[i];
@@ -1568,6 +1696,70 @@ function renderVictory() {
   ctx.textAlign = "left";
 }
 
+// ---------------------------------------------------------- MCP bridge (websocket)
+function applyAICommand(cmd) {
+  if (!cmd || typeof cmd !== "object") return "ignored";
+  if (cmd.action === "release") {
+    ai.enabled = false; ai.intent = null;
+    return "player 2 handed back to human control";
+  }
+  if (cmd.action === "select_weapon") {
+    if (!players) return "no game running";
+    const wi = WEAPONS.findIndex(w => w.key === cmd.weapon);
+    if (wi >= 0) players[1].weapon = wi;
+    ai.enabled = true;
+    return "weapon: " + WEAPONS[players[1].weapon].name;
+  }
+  ai.enabled = true;
+  ai.intent = cmd;
+  return "intent set: " + cmd.action;
+}
+
+function snapshotState() {
+  const r = Math.round;
+  const p2 = players && players[1];
+  return {
+    state, wave, score,
+    crew: crew ? { hp: crew.hp, maxHp: crew.maxHp } : null,
+    aiEnabled: ai.enabled,
+    intent: ai.intent,
+    players: players ? players.map(p => ({
+      x: r(p.x), y: r(p.y),
+      weapon: WEAPONS[p.weapon].key,
+      ammo: { cards: p.ammo[0], plates: p.ammo[1], charms: p.ammo[2] },
+    })) : null,
+    aliens: (aliens || [])
+      .map(a => ({ kind: a.kind, x: r(a.x), y: r(a.y), hp: a.hp,
+                   dist: p2 ? r(Math.hypot(a.x - p2.x, a.y - p2.y)) : 0 }))
+      .sort((a, b) => a.dist - b.dist).slice(0, 30),
+    pickups: (pickups || []).map(k => ({ kind: k.kind, x: r(k.x), y: r(k.y) })),
+    portalsPending: (portals || []).reduce((n, q) => n + q.queue.length, 0),
+    stations: stations.map(s => ({ type: s.type, x: r(s.x), y: r(s.y) })),
+  };
+}
+
+// connect to the local MCP bridge (mcp-server.mjs); retry quietly if absent
+(function connectAI() {
+  if (!/^https?:$/.test(location.protocol)) return;
+  let sock;
+  try { sock = new WebSocket("ws://localhost:8322"); } catch (e) { return; }
+  sock.onmessage = (ev) => {
+    advance(performance.now()); // catch the sim up even in a throttled tab
+    let msg;
+    try { msg = JSON.parse(ev.data); } catch (e) { return; }
+    const reply = (data) => sock.send(JSON.stringify(Object.assign({ id: msg.id }, data)));
+    if (msg.type === "state") reply({ data: snapshotState() });
+    else if (msg.type === "command") reply({ note: applyAICommand(msg.command), data: snapshotState() });
+    else if (msg.type === "press") {
+      window.dispatchEvent(new KeyboardEvent("keydown", { key: msg.key }));
+      window.dispatchEvent(new KeyboardEvent("keyup", { key: msg.key }));
+      reply({ ok: true, data: snapshotState() });
+    }
+  };
+  sock.onclose = () => { ai.enabled = false; ai.intent = null; setTimeout(connectAI, 3000); };
+  sock.onerror = () => {};
+})();
+
 // ---------------------------------------------------------- debug hook (used by automated tests)
 window.__aod = {
   get state() { return state; },
@@ -1586,14 +1778,26 @@ window.__aod = {
 };
 
 // ---------------------------------------------------------- loop
+// fixed-step simulation with catch-up: rAF drives it while the tab is
+// visible; a timer (and websocket traffic) keeps the game running when
+// rAF is paused, so the AI can keep playing in a background tab
 let lastT = performance.now();
+let lastRaf = 0;
+function advance(now) {
+  let behind = now - lastT;
+  if (behind > 1000) { lastT = now - 1000; behind = 1000; } // cap catch-up
+  while (behind >= 16) { update(0.016); lastT += 16; behind -= 16; }
+}
 function frame(now) {
-  const dt = Math.min(0.05, (now - lastT) / 1000);
-  lastT = now;
-  update(dt);
+  lastRaf = now;
+  advance(now);
   render();
   requestAnimationFrame(frame);
 }
 requestAnimationFrame(frame);
+setInterval(() => {
+  const now = performance.now();
+  if (now - lastRaf > 200) advance(now); // rAF is starved; simulate anyway
+}, 100);
 
 })();
